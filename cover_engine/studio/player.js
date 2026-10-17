@@ -10,6 +10,14 @@ const job = params.get('job');
 const revision = Number(params.get('revision'));
 const key = `flowback-live:${job}:${revision}`;
 const notify = value => parent.postMessage(`${key}:${value}`, '*');
+const embedded = params.get('embedded') === '1' && parent !== window;
+const relayWheel = event => {
+  if (event.ctrlKey || event.defaultPrevented || !event.cancelable || !event.deltaY
+      || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  event.preventDefault();
+  notify(`scroll:${event.deltaMode}:${event.deltaY}`);
+};
+if (embedded) addEventListener('wheel', relayWheel, {passive: false});
 const time = seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 let mixer;
 let original = false;
@@ -158,6 +166,7 @@ $('retry-save').addEventListener('click', () => saver.flush());
 addEventListener('online', () => saver.flush());
 addEventListener('pagehide', () => {
   disposed = true;
+  if (embedded) removeEventListener('wheel', relayWheel);
   resize.disconnect();
   saver.close();
   abort.abort();

@@ -35,8 +35,8 @@ function dom() {
   return {window, observers};
 }
 
-test('queued analysis polls to ready, raw players exclude each other, and closing stops audio and observers', async () => {
-  const {window, observers} = dom();
+test('queued analysis polls to ready, raw players exclude each other, and closing stops audio', async () => {
+  const {window} = dom();
   let calls = 0;
   let pauses = 0;
   globals({fetch: async () => Response.json(++calls === 1 ? {status: 'queued'} : ready)});
@@ -62,7 +62,6 @@ test('queued analysis polls to ready, raw players exclude each other, and closin
   players.forEach(audio => { audio.stopped = false; });
   view.close();
   expect(players.every(audio => audio.stopped)).toBe(true);
-  expect(observers.every(observer => observer.disconnected)).toBe(true);
 });
 
 test('a ready response arriving after the analysis view closes cannot render', async () => {

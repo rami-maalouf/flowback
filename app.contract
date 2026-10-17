@@ -318,7 +318,7 @@ component ExactCover
     else if data.startsWith(`${playerKey}height:`)
       match parseNumber(data.slice(playerKey.length + 7))
         case some(value)
-          if value >= 200 and value <= 12000
+          if value >= 200
             playerHeight = value
         case none
           playerHeight = 360
@@ -635,7 +635,7 @@ component ExactCover
                           text "Use this section"
                 if session.job.phase == "ready" and top(nav).name == "cover" and not openingCover
                   column padding=20 gap=16 border-radius=16 background-color="surface.card" border-style="solid" border-width=1 border-color="border.hairline" testId="result"
-                    iframe src=`${session.studio_origin}/studio/index.html?job=${session.job.id}&revision=${session.job.revision}&at=${playbackAt}` message=liveMessage aria-label="Live cover mixer" width="100%" height=playerHeight border-width=0 testId="live-mixer"
+                    iframe src=`${session.studio_origin}/studio/index.html?job=${session.job.id}&revision=${session.job.revision}&at=${playbackAt}&embedded=1` message=liveMessage aria-label="Live cover mixer" width="100%" height=playerHeight border-width=0 hatch="mixer-scroll" testId="live-mixer"
                     if session.job.error != ""
                       text session.job.error color="-exact-system-red" role="alert" testId="mix-render-error"
                   row align-items="center" gap=12 flex-wrap="wrap"

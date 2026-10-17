@@ -9,6 +9,9 @@
     "id": "com.rami.exact-cover",
     "name": "Flowback"
   },
+  "hatches": {
+    "mixer-scroll": ["macos", "web"]
+  },
   "host": {
     "ios": {
       "minimumOS": "17.0",

@@ -38,7 +38,7 @@ function pitchPlot(pitch) {
   section.append(heading, caption, legend, svg);
   return section;
 }
-function evidence(assessment, {job, pauseMix, players, observers}) {
+function evidence(assessment, {job, pauseMix, players}) {
   const details = element('details', '', 'assessment-evidence');
   details.append(element('summary', 'Inspect transcripts & measurement details'));
   const content = element('div', '', 'evidence-content');
@@ -60,17 +60,6 @@ function evidence(assessment, {job, pauseMix, players, observers}) {
     audioError.hidden = true;
     audio.addEventListener('error', () => { audioError.hidden = false; });
     const transcript = element('p', text || 'No reliable transcript available.', 'transcript-text');
-    const observer = new ResizeObserver(() => {
-      if (transcript.scrollHeight > transcript.clientHeight + 1) {
-        transcript.tabIndex = 0;
-        transcript.setAttribute('role', 'region');
-        transcript.setAttribute('aria-label', `${label} transcript`);
-      } else {
-        for (const name of ['tabindex', 'role', 'aria-label']) transcript.removeAttribute(name);
-      }
-    });
-    observer.observe(transcript);
-    observers.push(observer);
     block.append(element('h3', label), audio, audioError, transcript);
     content.append(block);
   }
@@ -109,7 +98,6 @@ export function mountAssessment(root, {job, signal, changed = () => {}, pauseMix
   let closed = false;
   let busy = false;
   const players = [];
-  const observers = [];
   const pause = () => { for (const audio of players) audio.pause(); };
   const endpoint = `/jobs/${encodeURIComponent(job)}/assessment`;
   const title = element('h2', 'Practice analysis');
@@ -165,7 +153,7 @@ export function mountAssessment(root, {job, signal, changed = () => {}, pauseMix
     content.append(metrics);
     const plot = pitchPlot(assessment.pitch);
     if (plot) content.append(plot);
-    content.append(evidence(assessment, {job, pauseMix, players, observers}));
+    content.append(evidence(assessment, {job, pauseMix, players}));
   }
   async function load(start = false) {
     if (closed || busy) return;
@@ -186,6 +174,5 @@ export function mountAssessment(root, {job, signal, changed = () => {}, pauseMix
     closed = true;
     clearTimeout(timer);
     pause();
-    for (const observer of observers) observer.disconnect();
   }};
 }
