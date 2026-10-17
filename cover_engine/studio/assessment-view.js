@@ -38,7 +38,7 @@ function pitchPlot(pitch) {
   section.append(heading, caption, legend, svg);
   return section;
 }
-function evidence(assessment, {job, pauseMix, players}) {
+function evidence(assessment, {job, pauseMix, players, observers}) {
   const details = element('details', '', 'assessment-evidence');
   details.append(element('summary', 'Inspect transcripts & measurement details'));
   const content = element('div', '', 'evidence-content');
@@ -59,7 +59,19 @@ function evidence(assessment, {job, pauseMix, players}) {
     const audioError = element('p', 'This excerpt could not be loaded. Your mixed cover is still available.');
     audioError.hidden = true;
     audio.addEventListener('error', () => { audioError.hidden = false; });
-    block.append(element('h3', label), audio, audioError, element('p', text || 'No reliable transcript available.'));
+    const transcript = element('p', text || 'No reliable transcript available.', 'transcript-text');
+    const observer = new ResizeObserver(() => {
+      if (transcript.scrollHeight > transcript.clientHeight + 1) {
+        transcript.tabIndex = 0;
+        transcript.setAttribute('role', 'region');
+        transcript.setAttribute('aria-label', `${label} transcript`);
+      } else {
+        for (const name of ['tabindex', 'role', 'aria-label']) transcript.removeAttribute(name);
+      }
+    });
+    observer.observe(transcript);
+    observers.push(observer);
+    block.append(element('h3', label), audio, audioError, transcript);
     content.append(block);
   }
   if (assessment.words?.length) {
@@ -97,6 +109,7 @@ export function mountAssessment(root, {job, signal, changed = () => {}, pauseMix
   let closed = false;
   let busy = false;
   const players = [];
+  const observers = [];
   const pause = () => { for (const audio of players) audio.pause(); };
   const endpoint = `/jobs/${encodeURIComponent(job)}/assessment`;
   const title = element('h2', 'Practice analysis');
@@ -152,7 +165,7 @@ export function mountAssessment(root, {job, signal, changed = () => {}, pauseMix
     content.append(metrics);
     const plot = pitchPlot(assessment.pitch);
     if (plot) content.append(plot);
-    content.append(evidence(assessment, {job, pauseMix, players}));
+    content.append(evidence(assessment, {job, pauseMix, players, observers}));
   }
   async function load(start = false) {
     if (closed || busy) return;
@@ -169,5 +182,10 @@ export function mountAssessment(root, {job, signal, changed = () => {}, pauseMix
     finally { busy = false; }
   }
   load();
-  return {pause, close() { closed = true; clearTimeout(timer); pause(); }};
+  return {pause, close() {
+    closed = true;
+    clearTimeout(timer);
+    pause();
+    for (const observer of observers) observer.disconnect();
+  }};
 }
