@@ -149,6 +149,7 @@ def render(
     *,
     vocal_volume: float = 100,
     backing_volume: float = 100,
+    output_dir: Path | None = None,
 ) -> RenderResult:
     progress("rendering", "Aligning phrases without changing pitch and mixing your section.")
     try:
@@ -169,7 +170,7 @@ def render(
             *audio,
             SAMPLE_RATE,
             phrases,
-            work_dir,
+            output_dir if output_dir is not None else work_dir,
             vocal_volume=vocal_volume,
             backing_volume=backing_volume,
         )

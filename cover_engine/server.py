@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
+import soundfile as sf
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +42,12 @@ class ChoiceInput(BaseModel):
     candidate_id: str = Field(min_length=1, max_length=256)
 
 
+class MixInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vocal_volume: float = Field(default=100, ge=0, le=200, allow_inf_nan=False, strict=True)
+    backing_volume: float = Field(default=100, ge=0, le=200, allow_inf_nan=False, strict=True)
+
+
 def _write_json(path: Path, value):
     temporary = path.with_suffix(".tmp")
     with temporary.open("w") as file:
@@ -62,6 +69,9 @@ def _snapshot(job_id):
         "end": 0,
         "duration": 0,
         "warning": "",
+        "vocal_volume": 100,
+        "backing_volume": 100,
+        "revision": 0,
     }
 
 
@@ -96,10 +106,22 @@ class JobStore:
                 snapshot = value["snapshot"]
                 if not re.fullmatch(r"[a-f0-9]{32}", job_id) or snapshot["id"] != job_id:
                     continue
-                if set(snapshot) != set(_snapshot(job_id)):
+                defaults = _snapshot(job_id)
+                migration_fields = ("vocal_volume", "backing_volume", "revision")
+                migrated = any(field not in snapshot for field in migration_fields)
+                for field in migration_fields:
+                    snapshot.setdefault(field, defaults[field])
+                if set(snapshot) != set(defaults):
                     continue
                 self.jobs[job_id] = value
-                if snapshot["phase"] in ACTIVE_PHASES:
+                if snapshot["phase"] in ACTIVE_PHASES and value.get("previous_ready"):
+                    self._restore_ready(
+                        job_id,
+                        "The mix update was interrupted. Your previous mix is still available. Try again.",
+                    )
+                    snapshot = self.jobs[job_id]["snapshot"]
+                    self._save(job_id)
+                elif snapshot["phase"] in ACTIVE_PHASES:
                     snapshot.update(
                         phase="failed",
                         message="Processing was interrupted",
@@ -107,13 +129,16 @@ class JobStore:
                     )
                     self._save(job_id)
                 elif snapshot["phase"] == "ready" and not all(
-                    (self.work_dir(job_id) / name).is_file() for name in ("mix.wav", "original.wav")
+                    (self.output_dir(job_id) / name).is_file()
+                    for name in ("mix.wav", "original.wav")
                 ):
                     snapshot.update(
                         phase="failed",
                         message="Export files are missing",
                         error="The saved audio is missing. Create the cover again to retry.",
                     )
+                    self._save(job_id)
+                elif migrated:
                     self._save(job_id)
             except (ValueError, KeyError, OSError, TypeError):
                 LOGGER.warning("could not restore job: %s", path)
@@ -123,6 +148,32 @@ class JobStore:
 
     def work_dir(self, job_id):
         return self.root / "jobs" / job_id / "work"
+
+    def output_dir(self, job_id):
+        output_id = self.jobs[job_id].get("output_id")
+        if output_id is None:
+            return self.work_dir(job_id)
+        if not re.fullmatch(r"[a-f0-9]{32}", output_id):
+            raise ValueError("Invalid saved export directory")
+        return self.root / "jobs" / job_id / "exports" / output_id
+
+    def _queue_render(self, job_id, snapshot, candidate_id):
+        previous = deepcopy(self.jobs[job_id])
+        if previous["snapshot"]["phase"] == "ready":
+            self.jobs[job_id]["previous_ready"] = deepcopy(previous["snapshot"])
+        self.jobs[job_id]["snapshot"] = snapshot
+        try:
+            self._save(job_id)
+        except Exception:
+            self.jobs[job_id] = previous
+            raise
+        self.pending.put((job_id, candidate_id))
+        return deepcopy(snapshot)
+
+    def _restore_ready(self, job_id, error):
+        job = self.jobs[job_id]
+        job["snapshot"] = job.pop("previous_ready")
+        job["snapshot"].update(error=error)
 
     def get(self, job_id):
         with self.lock:
@@ -159,16 +210,27 @@ class JobStore:
                 duration=0,
                 warning="",
             )
-            self.jobs[job_id]["snapshot"] = snapshot
-            self._save(job_id)
-            self.pending.put((job_id, candidate_id))
-            return deepcopy(snapshot)
+            return self._queue_render(job_id, snapshot, candidate_id)
 
     def update(self, job_id, **changes):
         with self.lock:
             if not self.stopping.is_set():
                 self.jobs[job_id]["snapshot"].update(changes)
                 self._save(job_id)
+
+    def remix(self, job_id, vocal_volume, backing_volume):
+        with self.lock:
+            snapshot = self.get(job_id)
+            if snapshot["phase"] != "ready":
+                raise HTTPException(409, "Wait until this cover is ready before changing the mix.")
+            snapshot.update(
+                phase="queued",
+                message="Waiting to update your mix",
+                vocal_volume=vocal_volume,
+                backing_volume=backing_volume,
+                error="",
+            )
+            return self._queue_render(job_id, snapshot, snapshot["selected_id"])
 
     def _work(self):
         while not self.stopping.is_set():
@@ -220,24 +282,61 @@ class JobStore:
                     selected_id=candidate_id,
                     message="Aligning and mixing your performance",
                 )
-                result = engine.render(self.work_dir(job_id), candidate_id, progress)
-                if not all(
-                    (self.work_dir(job_id) / name).is_file() for name in ("mix.wav", "original.wav")
-                ):
+                snapshot = self.get(job_id)
+                output_id = uuid4().hex
+                output_dir = self.root / "jobs" / job_id / "exports" / output_id
+                output_dir.mkdir(parents=True)
+                result = engine.render(
+                    self.work_dir(job_id),
+                    candidate_id,
+                    progress,
+                    vocal_volume=snapshot["vocal_volume"],
+                    backing_volume=snapshot["backing_volume"],
+                    output_dir=output_dir,
+                )
+                if not all((output_dir / name).is_file() for name in ("mix.wav", "original.wav")):
                     raise ValueError(
                         "The audio engine did not produce both exports. Try creating the cover again."
                     )
-                self.update(job_id, phase="ready", message="Your cover is ready", **asdict(result))
+                for name in ("mix.wav", "original.wav"):
+                    info = sf.info(output_dir / name)
+                    if info.format != "WAV" or info.frames <= 0:
+                        raise ValueError("The audio engine produced an invalid export.")
+                with self.lock:
+                    if self.stopping.is_set():
+                        continue
+                    previous = deepcopy(self.jobs[job_id])
+                    self.jobs[job_id]["output_id"] = output_id
+                    self.jobs[job_id].pop("previous_ready", None)
+                    try:
+                        self.update(
+                            job_id,
+                            phase="ready",
+                            message="Your cover is ready",
+                            revision=snapshot["revision"] + 1,
+                            **asdict(result),
+                        )
+                    except Exception:
+                        self.jobs[job_id] = previous
+                        raise
             except Exception as error:
                 LOGGER.exception("cover processing failed for %s", job_id)
                 try:
-                    self.update(
-                        job_id,
-                        phase="failed",
-                        message="Could not finish this cover",
-                        error=str(error)
-                        or "The audio engine failed. Try creating the cover again.",
-                    )
+                    with self.lock:
+                        if self.jobs[job_id].get("previous_ready"):
+                            self._restore_ready(
+                                job_id,
+                                "Could not update your mix. Your previous mix is still available. Try again.",
+                            )
+                            self._save(job_id)
+                        else:
+                            self.update(
+                                job_id,
+                                phase="failed",
+                                message="Could not finish this cover",
+                                error=str(error)
+                                or "The audio engine failed. Try creating the cover again.",
+                            )
                 except Exception:
                     LOGGER.exception("could not persist failed status for %s", job_id)
 
@@ -371,7 +470,9 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, error):
         return JSONResponse(
-            {"detail": "Invalid request. Supply the required file or section identifiers."},
+            {
+                "detail": "Invalid request. Check file and section identifiers and use volumes from 0 to 200."
+            },
             status_code=422,
         )
 
@@ -443,12 +544,16 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
     async def choose(job_id: str, body: ChoiceInput):
         return app.state.store.choose(job_id, body.candidate_id)
 
+    @app.post("/jobs/{job_id}/mix", status_code=202)
+    async def remix(job_id: str, body: MixInput):
+        return app.state.store.remix(job_id, body.vocal_volume, body.backing_volume)
+
     def output(job_id, name):
         store = app.state.store
         with store.lock:
             if store.get(job_id)["phase"] != "ready":
                 raise HTTPException(409, "This cover's audio is not ready yet.")
-            path = store.work_dir(job_id) / name
+            path = store.output_dir(job_id) / name
             if not path.is_file():
                 raise HTTPException(404, "The exported audio is missing. Create the cover again.")
             return FileResponse(path, media_type="audio/wav", filename=f"cover-{job_id}-{name}")
