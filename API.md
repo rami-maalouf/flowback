@@ -11,12 +11,13 @@ The local development service binds to 127.0.0.1:8891. Browser origins on localh
 - `POST /jobs`: `{ "song_id": string, "vocal_id": string }`. Returns a job snapshot immediately. A serial background worker calls analysis. If the top candidate has coverage >= 0.75 and score exceeds the second candidate by >= 0.12, render it automatically. Otherwise wait for selection. Analysis may reject insufficient evidence instead of manufacturing a match.
 - `GET /jobs/{id}`: job snapshot.
 - `POST /jobs/{id}/choose`: `{ "candidate_id": string }`. Valid only in `choose` or `ready`; queue rendering for a candidate belonging to this job.
+- `POST /jobs/{id}/mix`: `{ "vocal_volume": number, "backing_volume": number }`. Percentages from 0 to 200, default 100; zero mutes a track. Valid only when ready. Queue rendering with the saved analysis and selected section, without separation or transcription. Return the queued job snapshot.
 - `GET /jobs/{id}/mix.wav`: rendered cover, only when ready.
 - `GET /jobs/{id}/original.wav`: same section of original song for comparison, only when ready.
 
 Audio endpoints support HTTP byte ranges and expose `Content-Range` to local browser clients. Export downloads in 256 KiB chunks to stay within Exact's response and native execution limits. Once prepared, a separate user press opens the save dialog with browser activation intact.
 
-A job snapshot has exactly these fields: `id`, `phase`, `message`, `error`, `candidates`, `selected_id`, `start`, `end`, `duration`, `warning`. Phases: `queued`, `separating`, `transcribing`, `matching`, `choose`, `rendering`, `ready`, `failed`. Numeric fields default to zero, strings to empty, candidates to an empty list. Candidates have the fields in `cover_engine.models.Candidate`. Scores are matching heuristics, not calibrated probabilities. Errors use `{ "detail": string }` with an appropriate non-2xx status. Preserve completed jobs and uploads on restart; mark interrupted jobs failed with a retry instruction.
+A job snapshot has exactly these fields: `id`, `phase`, `message`, `error`, `candidates`, `selected_id`, `start`, `end`, `duration`, `warning`, `vocal_volume`, `backing_volume`, `revision`. Volume fields default to 100, revision to zero and increment after each successful render. Older jobs acquire these defaults when restored. Other numeric fields default to zero, strings to empty, candidates to an empty list. Phases: `queued`, `separating`, `transcribing`, `matching`, `choose`, `rendering`, `ready`, `failed`. Candidates have the fields in `cover_engine.models.Candidate`. Scores are matching heuristics, not calibrated probabilities. Errors use `{ "detail": string }` with an appropriate non-2xx status. Preserve completed jobs and uploads on restart; mark interrupted jobs failed with a retry instruction. Clients use revision in preview URLs to reload changed audio and invalidate prepared exports when requesting another mix.
 
 ## audio engine interface
 
@@ -24,9 +25,9 @@ A job snapshot has exactly these fields: `id`, `phase`, `message`, `error`, `can
 
 Writes reusable stems, normalized audio, word timestamps and candidate alignment information to its private work directory. Uses pretrained separation and transcription models. Model libraries are optional until a real job is requested; missing dependencies produce an actionable error. All durations and alignment data refer to seconds.
 
-`cover_engine.pipeline.render(work_dir: Path, candidate_id: str, progress: Progress) -> RenderResult`
+`cover_engine.pipeline.render(work_dir: Path, candidate_id: str, progress: Progress, *, vocal_volume: float = 100, backing_volume: float = 100) -> RenderResult`
 
-Uses saved analysis and the chosen match to create `mix.wav` and `original.wav` in that directory. Preserve vocal pitch and phrasing; do not stretch individual words independently. Include brief lead-in and tail without returning the whole source song. Never overwrite input files.
+Uses saved analysis and the chosen match to create `mix.wav` and `original.wav` in that directory. Preserve vocal pitch and continuous audio between phrases, including sounds without transcribed words. Include brief lead-in and tail without returning the whole source song. Never overwrite input files. Volumes scale each track relative to the automatic balance; peak protection can reduce the master output to prevent clipping without changing the requested balance.
 
 ## verification
 

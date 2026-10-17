@@ -1,3 +1,4 @@
+import math
 import shutil
 import subprocess
 from itertools import pairwise
@@ -90,7 +91,12 @@ def mix_section(
     rate: int,
     phrases: list[Phrase],
     directory: Path,
+    *,
+    vocal_volume: float = 100,
+    backing_volume: float = 100,
 ) -> RenderResult:
+    if not all(math.isfinite(v) and 0 <= v <= 200 for v in (vocal_volume, backing_volume)):
+        raise ValueError("Volume must be between 0% and 200%.")
     if not phrases:
         raise ValueError("No phrases were aligned. Analyze the files again.")
     channels = song.shape[1]
@@ -156,7 +162,7 @@ def mix_section(
     vocal_rms = float(np.sqrt(np.mean(aligned[active] ** 2)))
     music_rms = float(np.sqrt(np.mean(instrumental[active] ** 2)))
     gain = min(8.0, max(0.15, max(0.06, music_rms * 0.9) / vocal_rms))
-    mixed = instrumental + aligned * gain
+    mixed = instrumental * (backing_volume / 100) + aligned * gain * (vocal_volume / 100)
     peak = float(np.max(np.abs(mixed)))
     if peak > 0.98:
         mixed *= 0.98 / peak

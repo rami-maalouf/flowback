@@ -45,6 +45,35 @@ def test_unusable_stretch_is_refused():
         stretch_phrase(tone(440, 1), 24000, 8)
 
 
+def test_independent_levels_control_exported_audio_and_allow_muting(tmp_path):
+    rate = 24000
+    backing = tone(220, 5)
+    vocal = tone(440, 2)
+    phrases = [Phrase(0, 2, 1, 3)]
+
+    def render(vocal_volume, backing_volume):
+        mix_section(
+            backing,
+            backing,
+            vocal,
+            rate,
+            phrases,
+            tmp_path,
+            vocal_volume=vocal_volume,
+            backing_volume=backing_volume,
+        )
+        return sf.read(tmp_path / "mix.wav")[0]
+
+    voice = render(100, 0)
+    music = render(0, 100)
+    assert np.max(abs(voice)) > 0.01
+    assert np.max(abs(music)) > 0.01
+    np.testing.assert_allclose(render(50, 100), voice * 0.5 + music, atol=4e-7)
+    np.testing.assert_allclose(render(100, 25), voice + music * 0.25, atol=4e-7)
+    assert not np.any(render(0, 0))
+    assert np.max(abs(render(200, 200))) <= 0.981
+
+
 def test_equal_timing_keeps_vocal_between_phrases_and_at_seams(tmp_path):
     rate = 24000
     vocal = tone(437, 3.4)
@@ -99,4 +128,8 @@ def test_analysis_persists_alignment_and_renders_selected_repeat(tmp_path, monke
     assert result.end == pytest.approx(16.4)
     assert progress == ["separating", "transcribing", "matching", "rendering"]
     assert sf.info(work_dir / "mix.wav").duration == pytest.approx(result.duration)
+    pipeline.render(
+        work_dir, candidates[1].id, lambda *_: None, vocal_volume=0, backing_volume=0
+    )
+    assert not np.any(sf.read(work_dir / "mix.wav")[0])
     assert (song.read_bytes(), vocal.read_bytes()) == original_inputs
