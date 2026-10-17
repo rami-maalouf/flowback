@@ -33,6 +33,8 @@ shape Draft
 
 shape Session
   title: string
+  take_name: string
+  studio_origin: string
   song_id: string
   song_name: string
   song_duration: number
@@ -55,6 +57,36 @@ shape SavedCover
   duration: number
   start: number
   end: number
+  take_count: number
+  latest_take_id: string
+
+shape Take
+  id: string
+  name: string
+  saved_at: string
+  phase: string
+  status: string
+  duration: number
+  start: number
+  end: number
+  comparable: bool
+  analysis_status: string
+  lyrics: string
+  timing: string
+  pace: string
+  pitch: string
+  range: string
+
+shape Takes
+  takes: Take[]
+  error: string
+
+shape TakeDraft
+  name: string
+  vocal_id: string
+  vocal_name: string
+  vocal_duration: number
+  error: string
 
 shape Library
   covers: SavedCover[]
@@ -71,18 +103,23 @@ routes nav
   home "/"
     add "/add"
     cover "/cover"
+      addTake "/cover/add-take"
 
 component ExactCover
   resource draft = loadDraft() as shape Draft
   resource session = loadSession() as shape Session
   resource library = loadLibrary() as shape Library
-  mutation changed as shape Reply refreshes session, library, draft then afterChange
+  resource takes = loadTakes(session.song_id, session.job.id, sortBy) as shape Takes
+  resource takeDraft = loadTakeDraft(session.song_id) as shape TakeDraft
+  mutation changed as shape Reply refreshes session, library, draft, takes, takeDraft then afterChange
+  mutation named as shape Reply queue refreshes takeDraft
   mutation exported as shape Reply then exportPrepared
   state source = "file" persist
   state youtubeUrl = "" persist
   state youtubeDirty = false persist
   state title = "" persist
   state query = ""
+  state sortBy = "newest"
   state feedback = ""
   state showDetails = false
   state playerHeight = 360
@@ -96,6 +133,8 @@ component ExactCover
   state draftKey = ""
   state draftVocal = 100
   state draftBacking = 100
+  state originalPosition = -1
+  state playbackAt = -1
   derive songs = library.covers.filter(c => c.title.toLowerCase().includes(query.trim().toLowerCase()) or c.vocal_name.toLowerCase().includes(query.trim().toLowerCase()))
   derive visibleError = feedback == "" ? "" : error
   derive mixKey = `${session.job.id}:${session.job.selected_id}:${session.job.revision}`
@@ -108,19 +147,23 @@ component ExactCover
   derive error = match changed { case some(r) => r.error, case none => "" }
   derive exportError = match exported { case some(r) => r.error, case none => "" }
   derive canCreate = not youtubeDirty and session.online and session.models_available and draft.song_id != "" and draft.vocal_id != "" and not pending(changed) and not pending(exported)
+  derive canCreateTake = session.online and session.models_available and takeDraft.vocal_id != "" and not pending(changed) and not pending(named) and not pending(exported)
+  derive nameError = match named { case some(r) => r.error, case none => "" }
+  derive sortMeaning = sortBy == "lyrics" ? "Higher recognized-word agreement first." : sortBy == "timing" ? "Smaller word-timing differences first." : sortBy == "pace" ? "Pace closest to the original (100%) first." : sortBy == "pitch" ? "Smaller pitch-movement differences first." : "Pitch range closest to the original excerpt first."
   task poll mount
     every(2000, refresh)
   action refresh
     if not pending(changed)
       refresh session
       refresh library
+      refresh takes
   action back
-    if not pending(changed) and not pending(exported)
+    if not pending(changed) and not pending(exported) and not pending(named)
       playerReadyKey = ""
       nav = back(nav)
       refresh library
   action follow(url: string)
-    if not pending(changed) and not pending(exported)
+    if not pending(changed) and not pending(exported) and not pending(named)
       playerReadyKey = ""
       nav = go(nav, url)
   action search(value: string)
@@ -133,6 +176,32 @@ component ExactCover
     feedback = ""
     intent = ""
     nav = push(nav, "/add")
+  action addTake
+    feedback = ""
+    playerReadyKey = ""
+    playbackAt = originalPosition
+    nav = push(nav, "/cover/add-take")
+  action sortTakes(value: string)
+    sortBy = value
+  action editTakeName(value: string)
+    send named = saveTakeName(session.song_id, value)
+  action chooseTakeVocal
+    showPicker("take-vocal-file")
+  action takeVocalPicked(files: Picked[])
+    match first(files)
+      case some(f)
+        intent = "take-vocal"
+        send changed = importTakeAudio(session.song_id, f.path, f.name, f.size)
+      case none
+        feedback = ""
+  action makeTake
+    intent = "create-take"
+    playerReadyKey = ""
+    exportNote = ""
+    exportReady = false
+    draftKey = ""
+    playbackAt = -1
+    send changed = createTake(session.song_id)
   action chooseFileSource
     source = "file"
     youtubeDirty = false
@@ -151,10 +220,13 @@ component ExactCover
     title = value
   action afterChange
     feedback = intent
+    openingCover = false
     if error == "" and (intent == "open" or intent == "create")
       nav = intent == "create" ? replace(nav, "/cover") : push(nav, "/cover")
       if intent == "create"
         title = ""
+    if error == "" and intent == "create-take"
+      nav = back(nav)
     if error == "" and intent == "youtube"
       youtubeDirty = false
     if error == "" and intent == "create"
@@ -172,7 +244,22 @@ component ExactCover
     draftKey = ""
     exportNote = ""
     exportReady = false
+    playbackAt = -1
+    originalPosition = -1
     send changed = openCover(id)
+  action selectTake(id: string)
+    if id != session.job.id
+      showDetails = false
+      feedback = ""
+      playerHeight = 360
+      intent = "take"
+      openingCover = true
+      playbackAt = originalPosition
+      playerReadyKey = ""
+      draftKey = ""
+      exportNote = ""
+      exportReady = false
+      send changed = openCover(id)
   action chooseSong
     showPicker("song-file")
   action chooseVocal
@@ -218,10 +305,19 @@ component ExactCover
       playerReadyKey = mixKey
     else if data == `${playerKey}loading`
       playerReadyKey = ""
+    else if data == `${playerKey}assessment`
+      refresh takes
+    else if data.startsWith(`${playerKey}position:`)
+      match parseNumber(data.slice(playerKey.length + 9))
+        case some(value)
+          if value >= 0 and value <= session.song_duration
+            originalPosition = value
+        case none
+          originalPosition = -1
     else if data.startsWith(`${playerKey}height:`)
       match parseNumber(data.slice(playerKey.length + 7))
         case some(value)
-          if value >= 200 and value <= 1600
+          if value >= 200 and value <= 12000
             playerHeight = value
         case none
           playerHeight = 360
@@ -307,12 +403,13 @@ component ExactCover
                     else
                       column border-radius=14 border-width=1 border-style="solid" border-color="border.hairline" overflow="hidden" background-color="surface.card"
                         for cover in songs key=cover.id
-                          button press=openSaved(cover.id) disabled=(pending(changed) or pending(exported)) aria-label=`Open ${cover.title}` testId=`open-${cover.id}` display="flex" align-items="center" gap=14 padding="16px" width="100%" box-sizing="border-box" text-align="left" background-color="transparent" border-width=0 border-bottom-width=1 border-style="solid" border-color="border.hairline" border-radius=0
+                          button press=openSaved(cover.latest_take_id) disabled=(pending(changed) or pending(exported)) aria-label=`Open ${cover.title}` testId=`open-${cover.id}` display="flex" align-items="center" gap=14 padding="16px" width="100%" box-sizing="border-box" text-align="left" background-color="transparent" border-width=0 border-bottom-width=1 border-style="solid" border-color="border.hairline" border-radius=0
                             column width=42 height=42 flex-shrink=0 align-items="center" justify-content="center" border-radius=10 background-color="surface.soft"
                               image "symbol:waveform" width=22 height=22 color="brand.ink"
                             column flex=1 min-width=0 gap=5
                               text cover.title font-weight=600 line-clamp=2
                               row gap=8 flex-wrap="wrap" align-items="center"
+                                text `${cover.take_count} ${cover.take_count == 1 ? "take" : "takes"}` font="-exact-footnote" color="text.secondary"
                                 text cover.status font="-exact-footnote" color=(cover.phase == "failed" ? "-exact-system-red" : "text.secondary")
                                 if cover.duration > 0
                                   text `· ${duration(cover.duration)}` font="-exact-footnote" color="text.secondary" font-variant-numeric="tabular-nums"
@@ -405,12 +502,56 @@ component ExactCover
                   button press=create buttonStyle="bordered-prominent" disabled=(not canCreate) testId="create-cover"
                     text (pending(changed) and intent == "create" ? "Creating…" : "Create cover")
                   text (draft.song_id == "" or draft.vocal_id == "" ? "Add both files to continue. Your draft is saved automatically." : youtubeDirty ? "Import your YouTube link to continue." : "We’ll match and mix only the section you sang.") font="-exact-footnote" color="text.secondary" text-align="center" line-height=1.4
+        if entry.name == "addTake"
+          column navigationKey=`${entry.id}` navigationScroll="take-content" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+              button id="back" press=back disabled=(pending(changed) or pending(named)) testId="take-back"
+                text "Song"
+              text "Add take" role="heading" aria-level=2 flex=1
+            scroll id="take-content" flex=1 min-height=0
+              column width="100%" box-sizing="border-box" min-width=0 max-width=640 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="add-take-form"
+                column gap=8
+                  text session.title font-size=24 font-weight=650 testId="take-song-title"
+                  text "Add another vocal recording. We’ll reuse the original song and analyze this take separately." color="text.secondary" line-height=1.45
+                column gap=8
+                  row gap=8 align-items="baseline" flex-wrap="wrap"
+                    text "Take name" font-weight=600
+                    text "Optional" font="-exact-footnote" color="text.secondary"
+                  input value=takeDraft.name input=editTakeName maxlength=160 placeholder="For example, slower practice" aria-label="Take name" disabled=pending(changed) testId="take-name"
+                  if nameError != ""
+                    text nameError role="alert" color="-exact-system-red"
+                column padding=20 gap=16 border-radius=14 background-color="surface.card" border-style="solid" border-width=1 border-color="border.hairline" testId="take-vocal-card"
+                  text "Your vocals" font-weight=600
+                  if takeDraft.vocal_id == ""
+                    text "A verse, a chorus, or the whole song. Use your voice on its own for the clearest result." color="text.secondary" font="-exact-subheadline" line-height=1.4
+                  else
+                    column gap=5
+                      text takeDraft.vocal_name line-clamp=3 testId="take-vocal-name"
+                      text `${duration(takeDraft.vocal_duration)} · Ready` color="text.secondary" font="-exact-footnote"
+                  button press=chooseTakeVocal buttonStyle="bordered" disabled=(pending(changed) or pending(named)) testId="choose-take-vocal"
+                    text (pending(changed) and intent == "take-vocal" ? "Importing vocals…" : takeDraft.vocal_id == "" ? "Choose vocal file…" : "Replace vocal file…")
+                  if pending(changed) and intent == "take-vocal"
+                    progress aria-label="Importing take"
+                if visibleError != "" and not pending(changed)
+                  text visibleError color="-exact-system-red" role="alert" testId="take-error"
+                if takeDraft.error != ""
+                  text takeDraft.error color="-exact-system-red" role="alert"
+                if not session.online
+                  text "The audio engine is disconnected. Reconnecting automatically…" color="text.secondary"
+                column gap=12
+                  text "WAV, MP3, M4A or FLAC · Up to 64 MB" font="-exact-footnote" color="text.secondary"
+                  button press=makeTake buttonStyle="bordered-prominent" disabled=(not canCreateTake) testId="create-take"
+                    text (pending(changed) and intent == "create-take" ? "Creating…" : "Create take")
+                  text "Your draft is saved automatically for this song." font="-exact-footnote" color="text.secondary" text-align="center"
+                input type="file" id="take-vocal-file" testId="take-vocal-file" display="none" change=takeVocalPicked
         if entry.name == "cover"
           column navigationKey=`${entry.id}` navigationScroll="cover-content" position="absolute" inset=0 display="flex" flex-direction="column"
             header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
               button id="back" press=back disabled=(pending(changed) or pending(exported)) testId="cover-back"
                 text "Your songs"
-              text "Your cover" role="heading" aria-level=2 flex=1
+              text "Your song" role="heading" aria-level=2 flex=1
+              button press=addTake buttonStyle="bordered-prominent" disabled=(session.song_id == "" or pending(changed) or pending(exported)) testId="add-take"
+                text "Add take"
             scroll id="cover-content" flex=1 min-height=0
               column width="100%" box-sizing="border-box" min-width=0 max-width=760 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="cover-detail"
                 column gap=8 padding-top=8
@@ -419,6 +560,47 @@ component ExactCover
                     text `${duration(session.job.duration)} cover · ${duration(session.job.start)} - ${duration(session.job.end)} in the original` color="text.secondary" font="-exact-subheadline" testId="result-range"
                   else
                     text "Your performance, on the original track." color="text.secondary" font="-exact-subheadline"
+                column gap=14 testId="takes"
+                  row gap=12 align-items="center" flex-wrap="wrap"
+                    text `Your takes (${takes.takes.length})` role="heading" aria-level=3 font-size=17 font-weight=600 flex=1
+                    select value=sortBy change=sortTakes aria-label="Sort takes" testId="take-sort"
+                      option "Newest first" value="newest"
+                      option "Lyric agreement" value="lyrics"
+                      option "Timing difference" value="timing"
+                      option "Pace match" value="pace"
+                      option "Pitch movement difference" value="pitch"
+                      option "Pitch range match" value="range"
+                  if takes.error != ""
+                    text takes.error role="alert" color="-exact-system-red" testId="takes-error"
+                  else
+                    column border-radius=12 border-width=1 border-style="solid" border-color="border.hairline" overflow="hidden" background-color="surface.card"
+                      for take in takes.takes key=take.id
+                        button press=selectTake(take.id) aria-pressed=(take.id == session.job.id) aria-label=`Select ${take.name}` disabled=(pending(changed) or pending(exported)) testId=`take-${take.id}` display="flex" flex-direction="column" align-items="stretch" text-align="left" gap=8 padding=14 border-width=0 border-bottom-width=1 border-style="solid" border-color="border.hairline" border-radius=0 background-color=(take.id == session.job.id ? "surface.soft" : "transparent")
+                          row gap=10 align-items="center"
+                            text take.name font-weight=600 line-clamp=2 flex=1
+                            if take.id == session.job.id
+                              text "Selected" font="-exact-footnote" color="brand.ink"
+                          row gap=8 flex-wrap="wrap"
+                            text take.saved_at font="-exact-footnote" color="text.secondary"
+                            if take.duration > 0
+                              text `· ${duration(take.start)} - ${duration(take.end)}` font="-exact-footnote" color="text.secondary"
+                            text `· ${take.phase == "ready" ? take.analysis_status : take.status}` font="-exact-footnote" color="text.secondary"
+                          if take.analysis_status == "Analysis ready"
+                            row gap=10 flex-wrap="wrap"
+                              text `Word agreement ${take.lyrics}` font="-exact-caption2" color="text.secondary"
+                              text `Timing ${take.timing}` font="-exact-caption2" color="text.secondary"
+                              text `Pace ${take.pace}` font="-exact-caption2" color="text.secondary"
+                              text `Pitch ${take.pitch}` font="-exact-caption2" color="text.secondary"
+                              text `Range ${take.range}` font="-exact-caption2" color="text.secondary"
+                          if not take.comparable and take.id != session.job.id
+                            text "Different section or method · Not ranked against this take" font="-exact-footnote" color="text.secondary"
+                  if sortBy != "newest"
+                    text `${sortMeaning} Only comparable sections are ranked; missing measurements appear last.` font="-exact-footnote" color="text.secondary" line-height=1.4 testId="ranking-note"
+                  text "Word agreement compares speech-recognized lyrics. It is not an articulation grade." font="-exact-footnote" color="text.secondary" line-height=1.4
+                column gap=6
+                  text (session.take_name == "" ? session.vocal_name : session.take_name) font-weight=600 testId="selected-take-name"
+                  if openingCover
+                    text "Opening take…" role="status" color="text.secondary"
                 if visibleError != "" and not pending(changed)
                   text visibleError color="-exact-system-red" role="alert"
                 if session.error != ""
@@ -450,9 +632,9 @@ component ExactCover
                         text candidate.lyrics line-clamp=4 color="text.secondary" line-height=1.5
                         button press=choose(candidate.id) disabled=pending(changed) buttonStyle="bordered" testId=`match-${candidate.id}`
                           text "Use this section"
-                if session.job.phase == "ready"
+                if session.job.phase == "ready" and top(nav).name == "cover" and not openingCover
                   column padding=20 gap=16 border-radius=16 background-color="surface.card" border-style="solid" border-width=1 border-color="border.hairline" testId="result"
-                    iframe src=`http://127.0.0.1:8891/studio/index.html?job=${session.job.id}&revision=${session.job.revision}` message=liveMessage aria-label="Live cover mixer" width="100%" height=playerHeight border-width=0 testId="live-mixer"
+                    iframe src=`${session.studio_origin}/studio/index.html?job=${session.job.id}&revision=${session.job.revision}&at=${playbackAt}` message=liveMessage aria-label="Live cover mixer" width="100%" height=playerHeight border-width=0 testId="live-mixer"
                     if session.job.error != ""
                       text session.job.error color="-exact-system-red" role="alert" testId="mix-render-error"
                   row align-items="center" gap=12 flex-wrap="wrap"

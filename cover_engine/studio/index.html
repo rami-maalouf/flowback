@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Live cover mixer</title>
   <link rel="stylesheet" href="player.css">
+  <link rel="stylesheet" href="assessment.css">
 </head>
 <body>
   <main aria-label="Live cover mixer">
@@ -15,6 +16,7 @@
         <button id="original" aria-pressed="false" disabled>Original</button>
       </div>
     </div>
+    <p id="position-note" class="position-note" hidden>This take covers a different section. Playback starts at the beginning of this take.</p>
     <div class="transport">
       <button id="play" disabled aria-label="Play" data-playing="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path class="play-icon" d="M8 5v14l11-7z"/><path class="pause-icon" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
@@ -42,6 +44,7 @@
       </div>
     </div>
     <div class="footer"><span class="save-dot" aria-hidden="true"></span><p id="status" role="status">Loading audio…</p><button id="retry" hidden>Retry</button><button id="retry-save" hidden>Retry save</button></div>
+    <section id="assessment" aria-label="Practice analysis"></section>
   </main>
   <script type="module" src="player.js"></script>
 </body>

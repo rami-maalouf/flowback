@@ -12,11 +12,12 @@ const emptyJob: Result<'loadSession'>['job'] = {
 };
 type Saved = {
   title: string;
+  take_name: string;
   song_id: string; song_name: string; song_duration: number;
   vocal_id: string; vocal_name: string; vocal_duration: number; job_id: string;
 };
 const empty: Saved = {
-  title: '',
+  title: '', take_name: '',
   song_id: '', song_name: '', song_duration: 0,
   vocal_id: '', vocal_name: '', vocal_duration: 0, job_id: '',
 };
@@ -63,34 +64,91 @@ function displayTitle(title: string, file: string) {
     .split(/[-_ ]+/).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
 }
 
+const takeDraftPath = (songId: string) => `app:/data/take-draft-${encodeURIComponent(songId)}.json`;
+const phaseLabels: Record<string, string> = {ready: 'Ready to play', choose: 'Choose a section', failed: 'Needs attention'};
+const analysisLabels: Record<string, string> = {ready: 'Analysis ready', queued: 'Analysis queued', running: 'Analyzing', failed: 'Analysis needs attention'};
+const phaseLabel = (phase: string) => phaseLabels[phase] || 'Processing';
+const savedAt = (createdAt: number) => new Date(createdAt * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric'});
+type Measurement = {id: string; available: boolean; value: number | null; unit: string};
+function measurementText(metric?: Measurement) {
+  if (!metric?.available || typeof metric.value !== 'number' || !Number.isFinite(metric.value)) return 'Unavailable';
+  const value = metric.unit === 'ms' ? Math.round(metric.value) : Math.round(metric.value * 10) / 10;
+  const unit = metric.unit === 'semitones' ? 'st' : metric.unit;
+  return `${value}${unit === '%' ? '' : ' '}${unit}`;
+}
+
 const sources: Sources = {
   loadDraft: async (_args, _store, storage) => {
-    const { title: ignoredTitle, job_id: ignoredJob, ...files } = empty;
+    const { title: ignoredTitle, job_id: ignoredJob, take_name: ignoredTake, ...files } = empty;
     try {
-      const { title, job_id, ...draft } = await read(storage, draftPath);
+      const { title, job_id, take_name, ...draft } = await read(storage, draftPath);
       return { ...draft, error: '' };
     } catch (error) { return { ...files, error: message(error) }; }
   },
   loadLibrary: async (): Promise<Result<'loadLibrary'>> => {
     try {
-      const { covers } = await (await request('/jobs')).json();
-      const labels: Record<string, string> = {
-        ready: 'Ready to play', choose: 'Choose a section', failed: 'Needs attention',
-      };
-      return { error: '', covers: covers.map((cover: {
+      const { songs } = await (await request('/songs')).json();
+      return { error: '', covers: songs.map((cover: {
         id: string; title: string; song_name: string; vocal_name: string; created_at: number;
-        phase: string; duration: number; start: number; end: number;
+        phase: string; duration: number; start: number; end: number; take_count: number; latest_take_id: string;
       }) => ({
+        take_count: cover.take_count, latest_take_id: cover.latest_take_id,
         phase: cover.phase, id: cover.id, title: displayTitle(cover.title, cover.song_name), song_name: cover.song_name, vocal_name: cover.vocal_name,
-        saved_at: new Date(cover.created_at * 1000).toLocaleString(undefined,
-          {month: 'short', day: 'numeric'}),
-        status: labels[cover.phase] || 'Processing',
+        saved_at: savedAt(cover.created_at),
+        status: phaseLabel(cover.phase),
         duration: cover.duration, start: cover.start, end: cover.end,
       })) };
     } catch {
       return { covers: [], error: 'Saved covers are unavailable while the audio engine is disconnected. They are still kept on this Mac.' };
     }
   },
+  loadTakes: async ([songId, selected, sort]) => {
+    if (!songId) return {takes: [], error: ''};
+    try {
+      const {takes} = await (await request(`/songs/${encodeURIComponent(songId)}/takes?selected=${encodeURIComponent(selected)}&sort=${encodeURIComponent(sort)}`)).json();
+      return {error: '', takes: takes.map((take: {
+        id: string; name: string; vocal_name: string; created_at: number; phase: string;
+        duration: number; start: number; end: number; comparable: boolean;
+        assessment: {status: string; metrics: Measurement[]};
+      }) => {
+        const metrics = take.assessment.metrics || [];
+        return {id: take.id, name: take.name || take.vocal_name, saved_at: savedAt(take.created_at),
+          phase: take.phase, status: phaseLabel(take.phase), duration: take.duration, start: take.start, end: take.end,
+          comparable: take.comparable,
+          analysis_status: analysisLabels[take.assessment.status] || 'Not analyzed',
+          lyrics: measurementText(metrics.find(metric => metric.id === 'lyric_agreement')),
+          timing: measurementText(metrics.find(metric => metric.id === 'timing')),
+          pace: measurementText(metrics.find(metric => metric.id === 'pace')),
+          pitch: measurementText(metrics.find(metric => metric.id === 'pitch_shape')),
+          range: measurementText(metrics.find(metric => metric.id === 'pitch_range'))};
+      })};
+    } catch (error) { return {takes: [], error: message(error)}; }
+  },
+  loadTakeDraft: async ([songId], _store, storage) => {
+    try {
+      const draft = songId ? await read(storage, takeDraftPath(songId)) : empty;
+      return {name: draft.take_name, vocal_id: draft.vocal_id, vocal_name: draft.vocal_name, vocal_duration: draft.vocal_duration, error: ''};
+    } catch (error) { return {name: '', vocal_id: '', vocal_name: '', vocal_duration: 0, error: message(error)}; }
+  },
+  saveTakeName: ([songId, name], _store, storage) => attempt(async () => {
+    const path = takeDraftPath(songId);
+    await save(storage, {...await read(storage, path), take_name: name.slice(0, 160)}, path);
+  }),
+  importTakeAudio: ([songId, path, name, size], _store, storage) => attempt(async () => {
+    if (size > 64 * 1024 * 1024) throw new Error('Choose an audio file smaller than 64 MB.');
+    const uploaded = await (await request('/uploads', {method: 'POST', headers: {'X-File-Name': encodeURIComponent(name)}, exactBodyFrom: path} as RequestInit)).json();
+    const draftFile = takeDraftPath(songId);
+    const draft = await read(storage, draftFile);
+    await save(storage, {...draft, vocal_id: uploaded.id, vocal_name: uploaded.name, vocal_duration: uploaded.duration}, draftFile);
+  }),
+  createTake: ([songId], _store, storage) => attempt(async () => {
+    const path = takeDraftPath(songId);
+    const draft = await read(storage, path);
+    const job = await (await request(`/songs/${encodeURIComponent(songId)}/takes`, post({vocal_id: draft.vocal_id, name: draft.take_name.trim()}))).json();
+    const {job: ignored, ...session} = await (await request(`/jobs/${encodeURIComponent(job.id)}/session`)).json();
+    await save(storage, {...empty, ...session});
+    await save(storage, empty, path);
+  }),
   openCover: ([jobId], _store, storage) => attempt(async () => {
     const { job: ignored, ...session } = await (await request(`/jobs/${encodeURIComponent(jobId)}/session`)).json();
     await save(storage, { ...empty, ...session, title: session.title || session.song_name });
@@ -100,10 +158,10 @@ const sources: Sources = {
     let saved: Saved;
     try { saved = await read(storage); }
     catch (error) {
-      return { ...defaults, job: emptyJob, online: false, models_available: false, error: message(error) };
+      return { ...defaults, studio_origin: origin, job: emptyJob, online: false, models_available: false, error: message(error) };
     }
     const { job_id, ...files } = saved;
-    const result: Result<'loadSession'> = { ...files, title: displayTitle(files.title, files.song_name), job: emptyJob, online: false, models_available: false, error: '' };
+    const result: Result<'loadSession'> = { ...files, studio_origin: origin, title: displayTitle(files.title, files.song_name), job: emptyJob, online: false, models_available: false, error: '' };
     try {
       const health = await (await request('/health')).json();
       result.online = health.ok === true;
@@ -143,7 +201,7 @@ const sources: Sources = {
   retryCover: (_args, _store, storage) => attempt(async () => {
     const session = await read(storage);
     const job = await (await request('/jobs', post({ song_id: session.song_id,
-      vocal_id: session.vocal_id, title: session.title.slice(0, 160) }))).json();
+      vocal_id: session.vocal_id, title: session.title.slice(0, 160), take_name: session.take_name }))).json();
     await save(storage, { ...session, job_id: job.id });
   }),
   chooseMatch: ([candidate_id], _store, storage) => attempt(async () => {
