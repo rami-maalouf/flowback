@@ -2,11 +2,11 @@
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
-  color: light-dark(#20242b, #f2f3f5);
-  --accent: light-dark(#245fbd, #8abaff);
-  --secondary: light-dark(#626a76, #abb3bf);
-  --line: light-dark(#dce0e6, #3b4049);
-  --surface: light-dark(#e9ecf1, #30343c);
+  color: light-dark(#173537, #EDF7F5);
+  --accent: light-dark(#08777B, #69DAD2);
+  --secondary: light-dark(#536F71, #AAC5C5);
+  --line: light-dark(#D2E3E1, #25484B);
+  --surface: light-dark(#E4F1EF, #1B3E42);
   accent-color: var(--accent);
 }
 * { box-sizing: border-box; }
@@ -21,16 +21,16 @@ button:disabled, input:disabled { opacity: .45; cursor: default; }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .comparison { display: inline-flex; padding: 3px; border-radius: 9px; background: var(--surface); }
 .comparison button { border: 0; font-size: 12px; font-weight: 550; min-height: 30px; color: var(--secondary); }
-.comparison button[aria-pressed="true"] { background: light-dark(#fff, #525966); color: light-dark(#20242b, #fff); box-shadow: 0 1px 3px #00000015; }
+.comparison button[aria-pressed="true"] { background: light-dark(#fff, #31575A); color: light-dark(#173537, #fff); box-shadow: 0 1px 3px #00000015; }
 .transport { display: flex; align-items: center; gap: 18px; padding: 6px 0 18px; border-bottom: 1px solid var(--line); }
-#play { display: grid; place-items: center; flex-shrink: 0; width: 48px; height: 48px; padding: 0; border-radius: 50%; border: 0; background: var(--accent); color: light-dark(#fff, #122542); }
+#play { display: grid; place-items: center; flex-shrink: 0; width: 48px; height: 48px; padding: 0; border-radius: 50%; border: 0; background: var(--accent); color: light-dark(#fff, #0C2427); }
 #play:hover:enabled { filter: brightness(1.08); }
 #play svg { width: 25px; height: 25px; fill: currentColor; }
 #play[data-playing="false"] .pause-icon, #play[data-playing="true"] .play-icon { display: none; }
 .timeline { flex: 1; min-width: 0; }
 .waveform { height: 56px; position: relative; }
 #waveform { display: block; width: 100%; height: 56px; }
-#wave-bars { fill: light-dark(#c9d4e5, #46536a); }
+#wave-bars { fill: light-dark(#BBD8D5, #386568); }
 #played-bars { fill: var(--accent); }
 input[type="range"] { display: block; width: 100%; margin: 0; cursor: pointer; }
 #seek { position: absolute; inset: 0; height: 56px; appearance: none; background: transparent; }

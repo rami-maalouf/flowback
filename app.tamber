@@ -1,0 +1,12 @@
+tamber flowback
+
+theme
+  surface.page = light-dark(#F2F8F7, #0C2427)
+  surface.card = light-dark(#FFFFFF, #123034)
+  surface.soft = light-dark(#E4F1EF, #1B3E42)
+  surface.selected = light-dark(#FFFFFF, #31575A)
+  border.hairline = light-dark(#D2E3E1, #25484B)
+  brand.fill = #08777B scheme=fixed
+  brand.ink = light-dark(#086B70, #69DAD2)
+  text.primary = light-dark(#173537, #EDF7F5)
+  text.secondary = light-dark(#536F71, #AAC5C5)

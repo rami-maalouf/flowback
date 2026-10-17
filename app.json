@@ -1,13 +1,13 @@
 {
   "$schema": "../exact2/scripts/app.schema.json",
-  "name": "Exact Cover",
-  "short_name": "Exact Cover",
+  "name": "Flowback",
+  "short_name": "Flowback",
   "id": "com.rami.exact-cover",
   "start_url": "/",
   "display": "standalone",
   "app": {
     "id": "com.rami.exact-cover",
-    "name": "Exact Cover"
+    "name": "Flowback"
   },
   "host": {
     "ios": {
@@ -35,5 +35,14 @@
       "ios": "0",
       "linux": "0"
     }
-  }
+  },
+  "theme_color": "#08777B",
+  "icons": [
+    {
+      "src": "assets/flowback-icon.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
 }
