@@ -102,6 +102,7 @@ fn duration(n: number): string = `${floor(n / 60)}:${pad(floor(n) % 60)}`
 
 routes nav
   home "/"
+    deleted "/deleted"
     add "/add"
     cover "/cover"
       addTake "/cover/add-take"
@@ -110,11 +111,19 @@ component ExactCover
   resource draft = loadDraft() as shape Draft
   resource session = loadSession() as shape Session
   resource library = loadLibrary() as shape Library
+  resource removedLibrary = loadRemovedLibrary() as shape Library
   resource takes = loadTakes(session.song_id, session.job.id, sortBy) as shape Takes
   resource takeDraft = loadTakeDraft(session.song_id) as shape TakeDraft
   mutation changed as shape Reply refreshes session, library, draft, takes, takeDraft then afterChange
   mutation named as shape Reply queue refreshes takeDraft
   mutation exported as shape Reply then exportPrepared
+  mutation libraryChanged as shape Reply refreshes library, removedLibrary, session, takes, takeDraft then afterLibraryChange
+  state aimedSong = ""
+  state aimedTitle = ""
+  state aimedTakes = 0
+  state libraryIntent = ""
+  state libraryFeedback = false
+  state libraryNotice = ""
   state source = "file" persist
   state youtubeUrl = "" persist
   state youtubeDirty = false persist
@@ -150,21 +159,59 @@ component ExactCover
   derive canCreate = not youtubeDirty and session.online and session.models_available and draft.song_id != "" and draft.vocal_id != "" and not pending(changed) and not pending(exported)
   derive canCreateTake = session.online and session.models_available and takeDraft.vocal_id != "" and not pending(changed) and not pending(named) and not pending(exported)
   derive nameError = match named { case some(r) => r.error, case none => "" }
+  derive libraryActionError = match libraryChanged { case some(r) => r.error, case none => "" }
   derive sortMeaning = sortBy == "lyrics" ? "Higher recognized-word agreement first." : sortBy == "timing" ? "Smaller word-timing differences first." : sortBy == "pace" ? "Pace closest to the original (100%) first." : sortBy == "pitch" ? "Smaller pitch-movement differences first." : "Pitch range closest to the original excerpt first."
   task poll mount
     every(2000, refresh)
   action refresh
-    if not pending(changed)
+    if not pending(changed) and not pending(libraryChanged)
       refresh session
       refresh library
       refresh takes
+      if top(nav).name == "deleted"
+        refresh removedLibrary
+  action askDelete(id: string, name: string, count: number)
+    if not pending(libraryChanged)
+      aimedSong = id
+      aimedTitle = name
+      aimedTakes = count
+      libraryFeedback = false
+      libraryNotice = ""
+      showModal("delete-song-dialog")
+  action deleteSong
+    if aimedSong != "" and not pending(libraryChanged)
+      libraryIntent = "remove"
+      libraryFeedback = false
+      send libraryChanged = removeSong(aimedSong)
+  action restore(id: string, name: string)
+    if not pending(libraryChanged)
+      aimedSong = id
+      aimedTitle = name
+      libraryIntent = "restore"
+      libraryFeedback = false
+      libraryNotice = ""
+      send libraryChanged = restoreSong(id)
+  action afterLibraryChange
+    libraryFeedback = true
+    if libraryActionError == ""
+      libraryNotice = libraryIntent == "remove" ? `${aimedTitle} moved to Recently deleted.` : `${aimedTitle} restored to your songs.`
+  action retryLibraryChange
+    if libraryIntent == "remove"
+      deleteSong()
+    else
+      restore(aimedSong, aimedTitle)
+  action openDeleted
+    libraryNotice = ""
+    libraryFeedback = false
+    refresh removedLibrary
+    nav = push(nav, "/deleted")
   action back
-    if not pending(changed) and not pending(exported) and not pending(named)
+    if not pending(changed) and not pending(exported) and not pending(named) and not pending(libraryChanged)
       playerReadyKey = ""
       nav = back(nav)
       refresh library
   action follow(url: string)
-    if not pending(changed) and not pending(exported) and not pending(named)
+    if not pending(changed) and not pending(exported) and not pending(named) and not pending(libraryChanged)
       playerReadyKey = ""
       nav = go(nav, url)
   action search(value: string)
@@ -365,10 +412,10 @@ component ExactCover
     main navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow testId="root" width="100%" height="100%" background-color="surface.page" color="text.primary" accent-color="brand.fill"
       for entry in stack(nav) key=entry.id
         if entry.name == "home"
-          column navigationKey=`${entry.id}` navigationScroll="library-content" navigationSplit="none" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+          column navigationKey=`${entry.id}` navigationBar="none" navigationScroll="library-content" navigationSplit="none" position="absolute" inset=0 display="flex" flex-direction="column"
+            header role="toolbar" toolbarPlacement="window" aria-label="Library" display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
               text "Flowback" role="heading" aria-level=1 flex=1
-              button press=addSong buttonStyle="bordered-prominent" disabled=(pending(changed) or pending(exported)) testId="add-song"
+              button press=addSong buttonStyle="bordered-prominent" disabled=(pending(changed) or pending(exported) or pending(libraryChanged)) testId="add-song"
                 text "Add song"
             scroll id="library-content" flex=1 min-height=0
               column width="100%" box-sizing="border-box" min-width=0 max-width=840 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="library"
@@ -404,22 +451,75 @@ component ExactCover
                     else
                       column border-radius=14 border-width=1 border-style="solid" border-color="border.hairline" overflow="hidden" background-color="surface.card"
                         for cover in songs key=cover.id
-                          button press=openSaved(cover.latest_take_id) disabled=(pending(changed) or pending(exported)) aria-label=`Open ${cover.title}` testId=`open-${cover.id}` display="flex" align-items="center" gap=14 padding="16px" width="100%" box-sizing="border-box" text-align="left" background-color="transparent" border-width=0 border-bottom-width=1 border-style="solid" border-color="border.hairline" border-radius=0
-                            column width=42 height=42 flex-shrink=0 align-items="center" justify-content="center" border-radius=10 background-color="surface.soft"
-                              image "symbol:waveform" width=22 height=22 color="brand.ink"
-                            column flex=1 min-width=0 gap=5
-                              text cover.title font-weight=600 line-clamp=2
-                              row gap=8 flex-wrap="wrap" align-items="center"
-                                text `${cover.take_count} ${cover.take_count == 1 ? "take" : "takes"}` font="-exact-footnote" color="text.secondary"
-                                text cover.status font="-exact-footnote" color=(cover.phase == "failed" ? "-exact-system-red" : "text.secondary")
-                                if cover.duration > 0
-                                  text `· ${duration(cover.duration)}` font="-exact-footnote" color="text.secondary" font-variant-numeric="tabular-nums"
-                                text `· ${cover.saved_at}` font="-exact-footnote" color="text.secondary"
-                            image "symbol:forward-chevron" width=12 height=16 flex-shrink=0 color="text.secondary"
+                          row align-items="center" padding-right=8 border-width=0 border-bottom-width=1 border-style="solid" border-color="border.hairline"
+                            button press=openSaved(cover.latest_take_id) disabled=(pending(changed) or pending(exported) or pending(libraryChanged)) aria-label=`Open ${cover.title}` testId=`open-${cover.id}` display="flex" align-items="center" gap=14 padding="16px" flex=1 min-width=0 box-sizing="border-box" text-align="left" background-color="transparent" border-width=0 border-radius=0
+                              column width=42 height=42 flex-shrink=0 align-items="center" justify-content="center" border-radius=10 background-color="surface.soft"
+                                image "symbol:waveform" width=22 height=22 color="brand.ink"
+                              column flex=1 min-width=0 gap=5
+                                text cover.title font-weight=600 line-clamp=2
+                                row gap=8 flex-wrap="wrap" align-items="center"
+                                  text `${cover.take_count} ${cover.take_count == 1 ? "take" : "takes"}` font="-exact-footnote" color="text.secondary"
+                                  text cover.status font="-exact-footnote" color=(cover.phase == "failed" ? "-exact-system-red" : "text.secondary")
+                                  if cover.duration > 0
+                                    text `· ${duration(cover.duration)}` font="-exact-footnote" color="text.secondary" font-variant-numeric="tabular-nums"
+                                  text `· ${cover.saved_at}` font="-exact-footnote" color="text.secondary"
+                              image "symbol:forward-chevron" width=12 height=16 flex-shrink=0 color="text.secondary"
+                            button press=askDelete(cover.id, cover.title, cover.take_count) disabled=(pending(changed) or pending(exported) or pending(libraryChanged)) aria-label=`Delete ${cover.title}` testId=`delete-${cover.id}` background-color="transparent" border-width=0 width=44 height=44 flex-shrink=0 display="flex" justify-content="center" align-items="center"
+                              image "symbol:delete" width=18 height=20 color="text.secondary"
+                if pending(libraryChanged)
+                  text "Updating library…" role="status" color="text.secondary"
+                if libraryNotice != ""
+                  text libraryNotice role="status" color="text.secondary" line-height=1.45 testId="library-notice"
+                if libraryFeedback and libraryActionError != "" and not pending(libraryChanged)
+                  column gap=10
+                    text libraryActionError role="alert" color="-exact-system-red" testId="library-change-error"
+                    button press=retryLibraryChange buttonStyle="bordered" align-self="start" testId="retry-library-change"
+                      text "Try again"
+                button press=openDeleted disabled=pending(libraryChanged) buttonStyle="plain" align-self="start" testId="recently-deleted"
+                  text "Recently deleted" color="text.secondary"
                 if pending(changed) and openingCover
                   text "Opening song…" role="status" color="text.secondary"
                 if visibleError != "" and feedback == "open" and not pending(changed)
                   text visibleError color="-exact-system-red" role="alert" testId="library-action-error"
+        if entry.name == "deleted"
+          column navigationKey=`${entry.id}` navigationScroll="deleted-content" navigationSplit="none" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+              button id="back" press=back disabled=pending(libraryChanged) testId="deleted-back"
+                text "Your songs"
+              text "Recently deleted" role="heading" aria-level=2 flex=1
+            scroll id="deleted-content" flex=1 min-height=0
+              column width="100%" box-sizing="border-box" min-width=0 max-width=840 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="deleted-library"
+                text "Deleted songs and their takes stay on this Mac. Restore a song to bring back its recordings, mixes and analyses." color="text.secondary" line-height=1.5
+                if removedLibrary.error != ""
+                  column gap=12
+                    text removedLibrary.error role="alert" color="-exact-system-red"
+                    button press=refresh buttonStyle="bordered" testId="retry-deleted"
+                      text "Try again"
+                else if pending(removedLibrary) and removedLibrary.covers.length == 0
+                  progress aria-label="Loading deleted songs"
+                else if removedLibrary.covers.length == 0
+                  column gap=12 padding="40px 16px" align-items="center" testId="deleted-empty"
+                    image "symbol:delete" width=32 height=36 color="text.secondary" aria-hidden=true
+                    text "No deleted songs" font-size=22 font-weight=600
+                    text "Songs you delete will appear here." color="text.secondary" text-align="center"
+                else
+                  column border-radius=14 border-width=1 border-style="solid" border-color="border.hairline" overflow="hidden" background-color="surface.card"
+                    for cover in removedLibrary.covers key=cover.id
+                      row padding=16 gap=16 align-items="center" border-width=0 border-bottom-width=1 border-style="solid" border-color="border.hairline" testId=`deleted-${cover.id}`
+                        column flex=1 min-width=0 gap=6
+                          text cover.title font-weight=600 line-clamp=2
+                          text `${cover.take_count} ${cover.take_count == 1 ? "take" : "takes"}` font="-exact-footnote" color="text.secondary"
+                        button press=restore(cover.id, cover.title) disabled=pending(libraryChanged) buttonStyle="bordered" aria-label=`Restore ${cover.title}` testId=`restore-${cover.id}`
+                          text "Restore"
+                if pending(libraryChanged)
+                  text "Restoring song…" role="status" color="text.secondary"
+                if libraryNotice != ""
+                  text libraryNotice role="status" color="text.secondary" line-height=1.45 testId="restore-notice"
+                if libraryFeedback and libraryActionError != "" and not pending(libraryChanged)
+                  column gap=10
+                    text libraryActionError role="alert" color="-exact-system-red" testId="restore-error"
+                    button press=retryLibraryChange buttonStyle="bordered" align-self="start" testId="retry-restore"
+                      text "Try again"
         if entry.name == "add"
           column navigationKey=`${entry.id}` navigationScroll="add-content" position="absolute" inset=0 display="flex" flex-direction="column"
             header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
@@ -666,3 +766,9 @@ component ExactCover
                 else
                   text "Open a song from your library to listen to your cover." color="text.secondary"
                 input id="export-file" display="none" change=saved cancel=saveCancelled
+      dialog id="delete-song-dialog" role="alertdialog" aria-label=`Delete ${aimedTitle}?`
+        text `Move this song and its ${aimedTakes} ${aimedTakes == 1 ? "take" : "takes"} to Recently deleted? You can restore them anytime.`
+        button press=deleteSong destructive=true commandfor="delete-song-dialog" command="close" testId="confirm-delete-song"
+          text "Delete song"
+        button commandfor="delete-song-dialog" command="close" testId="cancel-delete-song"
+          text "Cancel"

@@ -129,3 +129,121 @@ test.each(['session request', 'creation response', 'session storage'])('retrying
     expect(JSON.parse(new TextDecoder().decode(files.get('app:/data/session.json'))).job_id).toBe('take-2');
   } finally { globalThis.fetch = oldFetch; }
 });
+
+test.each(['song/one?', 'song-two'])('removing a song clears only its draft and any matching selected session (%s)', async selectedSong => {
+  const {call, files} = storageFixture();
+  const oldFetch = globalThis.fetch;
+  const selected = new TextEncoder().encode(JSON.stringify({song_id: selectedSong, job_id: 'selected-take'}));
+  const newSong = new TextEncoder().encode(JSON.stringify({vocal_id: 'new-song-recording'}));
+  files.set('app:/data/session.json', selected);
+  files.set('app:/data/draft.json', newSong);
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({url, method: options.method, body: JSON.parse(options.body)});
+    return Response.json({ok: true});
+  };
+  try {
+    await call('saveTakeName', ['song/one?', 'Remove this draft']);
+    await call('saveTakeName', ['song-two', 'Keep this draft']);
+    expect(await call('removeSong', ['song/one?'])).toEqual({ok: true, error: ''});
+    expect(requests).toEqual([{url: 'http://127.0.0.1:8891/songs/song%2Fone%3F/remove', method: 'POST', body: {}}]);
+    expect((await call('loadTakeDraft', ['song/one?'])).name).toBe('');
+    expect((await call('loadTakeDraft', ['song-two'])).name).toBe('Keep this draft');
+    expect(files.get('app:/data/draft.json')).toEqual(newSong);
+    if (selectedSong === 'song/one?') {
+      expect(JSON.parse(new TextDecoder().decode(files.get('app:/data/session.json'))).job_id).toBe('');
+    } else {
+      expect(files.get('app:/data/session.json')).toEqual(selected);
+    }
+  } finally { globalThis.fetch = oldFetch; }
+});
+
+test('a rejected removal leaves the selected song and every draft intact', async () => {
+  const {call, files} = storageFixture();
+  const oldFetch = globalThis.fetch;
+  files.set('app:/data/session.json', new TextEncoder().encode(JSON.stringify({song_id: 'song-one', job_id: 'keep-me'})));
+  files.set('app:/data/draft.json', new TextEncoder().encode(JSON.stringify({song_id: 'unfinished-song'})));
+  await call('saveTakeName', ['song-one', 'Saved work']);
+  await call('saveTakeName', ['song-two', 'Other work']);
+  const before = new Map(files);
+  globalThis.fetch = async () => Response.json({detail: 'Removal could not be saved'}, {status: 503});
+  try {
+    expect(await call('removeSong', ['song-one'])).toEqual({ok: false, error: 'Removal could not be saved'});
+    expect(files).toEqual(before);
+  } finally { globalThis.fetch = oldFetch; }
+});
+
+test.each(['session.json', 'take-draft-song-one.json'])('retry finishes removal after %s cleanup fails', async failedFile => {
+  const {call, files, storage} = storageFixture();
+  const oldFetch = globalThis.fetch;
+  files.set('app:/data/session.json', new TextEncoder().encode(JSON.stringify({song_id: 'song-one', job_id: 'selected-take'})));
+  await call('saveTakeName', ['song-one', 'Remove this draft']);
+  await call('saveTakeName', ['song-two', 'Keep this draft']);
+  let failOnce = true;
+  const write = storage.fs.atomicWriteFile;
+  storage.fs.atomicWriteFile = async (path, value) => {
+    if (path === `app:/data/${failedFile}` && failOnce) {
+      failOnce = false;
+      throw new Error('Local storage unavailable');
+    }
+    await write(path, value);
+  };
+  const removedSongs = new Set();
+  let requests = 0;
+  globalThis.fetch = async url => {
+    expect(url).toBe('http://127.0.0.1:8891/songs/song-one/remove');
+    requests++;
+    removedSongs.add('song-one');
+    return Response.json({ok: true});
+  };
+  try {
+    expect(await call('removeSong', ['song-one'])).toEqual({ok: false, error: 'Local storage unavailable'});
+    expect(removedSongs.size).toBe(1);
+    expect((await call('loadTakeDraft', ['song-one'])).name).toBe('Remove this draft');
+    expect(await call('removeSong', ['song-one'])).toEqual({ok: true, error: ''});
+    expect(requests).toBe(2);
+    expect(removedSongs.size).toBe(1);
+    expect(JSON.parse(new TextDecoder().decode(files.get('app:/data/session.json'))).job_id).toBe('');
+    expect((await call('loadTakeDraft', ['song-one'])).name).toBe('');
+    expect((await call('loadTakeDraft', ['song-two'])).name).toBe('Keep this draft');
+  } finally { globalThis.fetch = oldFetch; }
+});
+
+test('removed songs use the same library presentation and report unavailable storage separately', async () => {
+  const {call} = storageFixture();
+  const oldFetch = globalThis.fetch;
+  const song = {id: 'song-one', title: '', song_name: 'first-song.wav', vocal_name: 'take.wav',
+    created_at: 1700000000, phase: 'ready', duration: 12, start: 1, end: 13, take_count: 2, latest_take_id: 'take-two'};
+  const requests = [];
+  globalThis.fetch = async url => {
+    requests.push(url);
+    return Response.json({songs: [song]});
+  };
+  try {
+    const active = await call('loadLibrary');
+    const removed = await call('loadRemovedLibrary');
+    expect(requests).toEqual(['http://127.0.0.1:8891/songs', 'http://127.0.0.1:8891/songs/removed']);
+    expect(removed).toEqual(active);
+    expect(removed.covers[0]).toMatchObject({id: 'song-one', title: 'First Song', status: 'Ready to play', take_count: 2, latest_take_id: 'take-two'});
+    globalThis.fetch = async () => { throw new TypeError('offline'); };
+    expect(await call('loadRemovedLibrary')).toEqual({covers: [], error: 'Removed songs are unavailable while the audio engine is disconnected. They are still kept on this Mac.'});
+  } finally { globalThis.fetch = oldFetch; }
+});
+
+test.each([200, 503])('restoring a song encodes its id and preserves local work (response %s)', async status => {
+  const {call, files} = storageFixture();
+  const oldFetch = globalThis.fetch;
+  files.set('app:/data/session.json', new TextEncoder().encode(JSON.stringify({song_id: 'other-song', job_id: 'selected-take'})));
+  files.set('app:/data/draft.json', new TextEncoder().encode(JSON.stringify({song_id: 'unfinished-song'})));
+  await call('saveTakeName', ['song/one?', 'Keep this draft']);
+  const before = new Map(files);
+  globalThis.fetch = async (url, options) => {
+    expect(url).toBe('http://127.0.0.1:8891/songs/song%2Fone%3F/restore');
+    expect(options.method).toBe('POST');
+    return Response.json(status === 200 ? {ok: true} : {detail: 'Restore unavailable'}, {status});
+  };
+  try {
+    expect(await call('restoreSong', ['song/one?'])).toEqual(status === 200 ? {ok: true, error: ''} : {ok: false, error: 'Restore unavailable'});
+    expect(files).toEqual(before);
+  } finally { globalThis.fetch = oldFetch; }
+});

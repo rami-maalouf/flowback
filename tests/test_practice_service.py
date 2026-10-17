@@ -3,12 +3,14 @@
 import json
 import time
 from threading import Event
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 from test_server import SNAPSHOT_KEYS, FakeEngine, await_phase, upload, wav_bytes
 
 from cover_engine.models import Candidate
+from cover_engine.persistence import write_json
 from cover_engine.server import create_app
 
 
@@ -343,3 +345,155 @@ def test_changed_raw_evidence_invalidates_analysis_without_mix_revision_change(t
         await_assessment(client, job_id)
         assert len(assessor.calls) == 3
         assert client.get(f"/jobs/{job_id}").json() == before
+
+
+def test_delete_and_restore_song_keep_every_take_and_unrelated_song_across_restart(tmp_path):
+    with client_for(tmp_path, FakeAssessor()) as client:
+        song, vocal, first = create_take(client, name="First pass")
+        await_phase(client, first, "ready")
+        await_assessment(client, first)
+        second = client.post(
+            f"/songs/{song['id']}/takes",
+            json={"vocal_id": vocal["id"], "name": "Second pass", "request_id": "second"},
+        ).json()["id"]
+        await_phase(client, second, "ready")
+        await_assessment(client, second)
+        other, _, unrelated = create_take(client)
+        await_phase(client, unrelated, "ready")
+        await_assessment(client, unrelated)
+        levels = client.post(
+            f"/jobs/{first}/levels",
+            json={
+                "revision": 1,
+                "vocal_volume": 125,
+                "backing_volume": 70,
+                "client_id": "00000000-0000-0000-0000-000000000001",
+                "sequence": 1,
+            },
+        )
+        assert levels.status_code == 200
+        songs_before = client.get("/songs").json()
+        takes_before = client.get(f"/songs/{song['id']}/takes").json()
+        library_before = client.get("/jobs").json()
+        files_before = {
+            path.relative_to(tmp_path): path.read_bytes()
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+        }
+        response = client.post(f"/songs/{song['id']}/remove")
+        assert response.status_code == 200
+        assert response.json() == {"song_id": song["id"], "removed": True}
+        with patch("cover_engine.server._write_json", wraps=write_json) as persist:
+            assert client.post(f"/songs/{song['id']}/remove").json() == response.json()
+            persist.assert_not_called()
+        assert [row["id"] for row in client.get("/songs").json()["songs"]] == [other["id"]]
+        assert [row["id"] for row in client.get("/jobs").json()["covers"]] == [unrelated]
+        removed = client.get("/songs/removed").json()["songs"]
+        assert removed == [row for row in songs_before["songs"] if row["id"] == song["id"]]
+        assert removed[0]["take_count"] == 2
+        assert client.get(f"/songs/{song['id']}/takes").status_code == 410
+        assert client.get(f"/jobs/{first}/session").status_code == 410
+        assert client.get(f"/jobs/{second}/session").status_code == 410
+        assert client.post(
+            f"/songs/{song['id']}/takes",
+            json={"vocal_id": vocal["id"], "request_id": "second"},
+        ).status_code == 410
+        assert client.post(
+            "/jobs", json={"song_id": song["id"], "vocal_id": vocal["id"]}
+        ).status_code == 410
+        assert all((tmp_path / path).read_bytes() == data for path, data in files_before.items())
+    with client_for(tmp_path, FakeAssessor()) as client:
+        assert [row["id"] for row in client.get("/songs").json()["songs"]] == [other["id"]]
+        assert client.get("/songs/removed").json()["songs"] == removed
+        response = client.post(f"/songs/{song['id']}/restore")
+        assert response.status_code == 200
+        assert response.json() == {"song_id": song["id"], "removed": False}
+        with patch("cover_engine.server._write_json", wraps=write_json) as persist:
+            assert client.post(f"/songs/{song['id']}/restore").json() == response.json()
+            persist.assert_not_called()
+        assert client.get("/songs").json() == songs_before
+        assert client.get("/jobs").json() == library_before
+        assert client.get(f"/songs/{song['id']}/takes").json() == takes_before
+        assert client.get("/songs/removed").json() == {"songs": []}
+        assert all((tmp_path / path).read_bytes() == data for path, data in files_before.items())
+    with client_for(tmp_path, FakeAssessor()) as client:
+        assert client.get("/songs").json() == songs_before
+        assert client.get("/songs/removed").json() == {"songs": []}
+
+
+def test_delete_and_restore_unknown_or_unstarted_song_do_not_change_library(tmp_path):
+    with client_for(tmp_path, FakeAssessor()) as client:
+        song = upload(client)
+        for song_id in ("missing", song["id"]):
+            for action in ("remove", "restore"):
+                assert client.post(f"/songs/{song_id}/{action}").status_code == 404
+        assert client.get("/songs").json() == {"songs": []}
+        assert client.get("/songs/removed").json() == {"songs": []}
+        assert not (tmp_path / "removed-songs.json").exists()
+
+
+@pytest.mark.parametrize("action", ["remove", "restore"])
+def test_deletion_write_failure_keeps_visible_and_durable_state_unchanged(tmp_path, action):
+    with client_for(tmp_path, FakeAssessor()) as client:
+        song, _, job_id = create_take(client)
+        await_phase(client, job_id, "ready")
+        await_assessment(client, job_id)
+        if action == "restore":
+            assert client.post(f"/songs/{song['id']}/remove").status_code == 200
+        songs_before = client.get("/songs").json()
+        removed_before = client.get("/songs/removed").json()
+        with patch("cover_engine.server._write_json", side_effect=OSError("disk full")):
+            response = client.post(f"/songs/{song['id']}/{action}")
+            assert response.status_code == 503
+            assert "Try again" in response.json()["detail"]
+        assert client.get("/songs").json() == songs_before
+        assert client.get("/songs/removed").json() == removed_before
+    with client_for(tmp_path, FakeAssessor()) as client:
+        assert client.get("/songs").json() == songs_before
+        assert client.get("/songs/removed").json() == removed_before
+        assert client.post(f"/songs/{song['id']}/{action}").status_code == 200
+
+
+@pytest.mark.parametrize("stage", ["render", "assessment"])
+def test_background_completion_does_not_restore_deleted_song(tmp_path, stage):
+    entered, release = Event(), Event()
+
+    class PausedEngine(FakeEngine):
+        def render(self, *args, **kwargs):
+            if stage == "render":
+                entered.set()
+                assert release.wait(3)
+            return super().render(*args, **kwargs)
+
+    assessor = FakeAssessor()
+    if stage == "assessment":
+        assessor.entered, assessor.release = entered, release
+    with client_for(tmp_path, assessor, PausedEngine()) as client:
+        song, _, job_id = create_take(client)
+        try:
+            assert entered.wait(1)
+            assert client.post(f"/songs/{song['id']}/remove").status_code == 200
+            assert client.get("/songs").json() == {"songs": []}
+        finally:
+            release.set()
+        await_phase(client, job_id, "ready")
+        await_assessment(client, job_id)
+        assert client.get("/songs").json() == {"songs": []}
+        assert client.get("/jobs").json() == {"covers": []}
+        removed = client.get("/songs/removed").json()["songs"]
+        assert removed[0]["phase"] == "ready"
+    with client_for(tmp_path, FakeAssessor()) as client:
+        assert client.get("/songs").json() == {"songs": []}
+        assert client.get("/songs/removed").json()["songs"] == removed
+        assert client.post(f"/songs/{song['id']}/restore").status_code == 200
+        assert client.get(f"/jobs/{job_id}/session").json()["job"]["phase"] == "ready"
+        assert client.get(f"/jobs/{job_id}/mix.wav").content == wav_bytes()
+
+
+def test_invalid_deletion_record_does_not_silently_restore_deleted_songs(tmp_path):
+    tmp_path.joinpath("removed-songs.json").write_text('{"song_ids": "invalid"}')
+    with (
+        pytest.raises(ValueError, match="deleted-song list is invalid"),
+        client_for(tmp_path, FakeAssessor()),
+    ):
+        pass

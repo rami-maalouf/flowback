@@ -69,6 +69,21 @@ const phaseLabels: Record<string, string> = {ready: 'Ready to play', choose: 'Ch
 const analysisLabels: Record<string, string> = {ready: 'Analysis ready', queued: 'Analysis queued', running: 'Analyzing', failed: 'Analysis needs attention'};
 const phaseLabel = (phase: string) => phaseLabels[phase] || 'Processing';
 const savedAt = (createdAt: number) => new Date(createdAt * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric'});
+async function loadSongLibrary(path: string, unavailable: string): Promise<Result<'loadLibrary'>> {
+  try {
+    const {songs} = await (await request(path)).json();
+    return {error: '', covers: songs.map((cover: {
+      id: string; title: string; song_name: string; vocal_name: string; created_at: number;
+      phase: string; duration: number; start: number; end: number; take_count: number; latest_take_id: string;
+    }) => ({
+      take_count: cover.take_count, latest_take_id: cover.latest_take_id,
+      phase: cover.phase, id: cover.id, title: displayTitle(cover.title, cover.song_name), song_name: cover.song_name, vocal_name: cover.vocal_name,
+      saved_at: savedAt(cover.created_at),
+      status: phaseLabel(cover.phase),
+      duration: cover.duration, start: cover.start, end: cover.end,
+    }))};
+  } catch { return {covers: [], error: unavailable}; }
+}
 type Measurement = {id: string; available: boolean; value: number | null; unit: string};
 function measurementText(metric?: Measurement) {
   if (!metric?.available || typeof metric.value !== 'number' || !Number.isFinite(metric.value)) return 'Unavailable';
@@ -85,23 +100,17 @@ const sources: Sources = {
       return { ...draft, error: '' };
     } catch (error) { return { ...files, error: message(error) }; }
   },
-  loadLibrary: async (): Promise<Result<'loadLibrary'>> => {
-    try {
-      const { songs } = await (await request('/songs')).json();
-      return { error: '', covers: songs.map((cover: {
-        id: string; title: string; song_name: string; vocal_name: string; created_at: number;
-        phase: string; duration: number; start: number; end: number; take_count: number; latest_take_id: string;
-      }) => ({
-        take_count: cover.take_count, latest_take_id: cover.latest_take_id,
-        phase: cover.phase, id: cover.id, title: displayTitle(cover.title, cover.song_name), song_name: cover.song_name, vocal_name: cover.vocal_name,
-        saved_at: savedAt(cover.created_at),
-        status: phaseLabel(cover.phase),
-        duration: cover.duration, start: cover.start, end: cover.end,
-      })) };
-    } catch {
-      return { covers: [], error: 'Saved covers are unavailable while the audio engine is disconnected. They are still kept on this Mac.' };
-    }
-  },
+  loadLibrary: () => loadSongLibrary('/songs', 'Saved covers are unavailable while the audio engine is disconnected. They are still kept on this Mac.'),
+  loadRemovedLibrary: () => loadSongLibrary('/songs/removed', 'Removed songs are unavailable while the audio engine is disconnected. They are still kept on this Mac.'),
+  removeSong: ([songId], _store, storage) => attempt(async () => {
+    await request(`/songs/${encodeURIComponent(songId)}/remove`, post({}));
+    const session = await read(storage);
+    if (session.song_id === songId) await save(storage, empty);
+    await save(storage, empty, takeDraftPath(songId));
+  }),
+  restoreSong: ([songId]) => attempt(async () => {
+    await request(`/songs/${encodeURIComponent(songId)}/restore`, post({}));
+  }),
   loadTakes: async ([songId, selected, sort]) => {
     if (!songId) return {takes: [], error: ''};
     try {

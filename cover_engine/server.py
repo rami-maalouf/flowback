@@ -106,6 +106,7 @@ class JobStore:
         self.stopping = threading.Event()
         self.uploads = {}
         self.jobs = {}
+        self.removed_songs = set()
         (root / "uploads").mkdir(parents=True, exist_ok=True)
         (root / "jobs").mkdir(parents=True, exist_ok=True)
         self._reload()
@@ -113,6 +114,20 @@ class JobStore:
         self.worker = threading.Thread(target=self._work, name="cover-engine", daemon=True)
 
     def _reload(self):
+        removed_path = self.root / "removed-songs.json"
+        if removed_path.exists():
+            removed = json.loads(removed_path.read_text())
+            if (
+                not isinstance(removed, dict)
+                or set(removed) != {"song_ids"}
+                or not isinstance(removed["song_ids"], list)
+                or any(
+                    not isinstance(song_id, str) or not re.fullmatch(r"[a-f0-9]{32}", song_id)
+                    for song_id in removed["song_ids"]
+                )
+            ):
+                raise ValueError("The saved deleted-song list is invalid.")
+            self.removed_songs = set(removed["song_ids"])
         for path in (self.root / "uploads").glob("*.json"):
             try:
                 value = json.loads(path.read_text())
@@ -211,6 +226,7 @@ class JobStore:
         with self.lock:
             snapshot = self.get(job_id)
             job = self.jobs[job_id]
+            self._require_active_song(job["song_id"])
             session = {"job_id": job_id}
             for role in ("song", "vocal"):
                 upload = self.uploads.get(job[role + "_id"], {})
@@ -236,6 +252,8 @@ class JobStore:
             for job_id, job in sorted(
                 self.jobs.items(), key=lambda item: item[1]["created_at"], reverse=True
             ):
+                if job["song_id"] in self.removed_songs:
+                    continue
                 session = self.saved_session(job_id)
                 snapshot = session["job"]
                 covers.append(
@@ -253,13 +271,15 @@ class JobStore:
                 )
             return {"covers": covers}
 
-    def songs(self):
+    def songs(self, *, removed=False):
         with self.lock:
             groups = {}
             for job_id, job in sorted(
                 self.jobs.items(), key=lambda item: item[1]["created_at"], reverse=True
             ):
                 song_id = job["song_id"]
+                if (song_id in self.removed_songs) != removed:
+                    continue
                 if song_id in groups:
                     groups[song_id]["take_count"] += 1
                     continue
@@ -280,6 +300,20 @@ class JobStore:
                 }
             return {"songs": list(groups.values())}
 
+    def _require_active_song(self, song_id):
+        if song_id in self.removed_songs:
+            raise HTTPException(410, "This song was deleted. Restore it from Recently deleted.")
+
+    def set_song_removed(self, song_id, removed):
+        with self.lock:
+            if not any(job["song_id"] == song_id for job in self.jobs.values()):
+                raise HTTPException(404, "This song was not found.")
+            if (song_id in self.removed_songs) != removed:
+                updated = self.removed_songs | {song_id} if removed else self.removed_songs - {song_id}
+                _write_json(self.root / "removed-songs.json", {"song_ids": sorted(updated)})
+                self.removed_songs = updated
+            return {"song_id": song_id, "removed": removed}
+
     def takes(self, song_id, selected="", sort="newest"):
         metrics = {
             "lyrics": "lyric_agreement",
@@ -293,6 +327,7 @@ class JobStore:
                 422, "Choose newest, lyrics, timing, pace, pitch, or range sorting."
             )
         with self.lock:
+            self._require_active_song(song_id)
             jobs = sorted(
                 ((job_id, job) for job_id, job in self.jobs.items() if job["song_id"] == song_id),
                 key=lambda item: item[1]["created_at"],
@@ -393,6 +428,7 @@ class JobStore:
 
     def add_take(self, song_id, vocal_id, name="", request_id=None):
         with self.lock:
+            self._require_active_song(song_id)
             if request_id is not None:
                 for job_id, job in self.jobs.items():
                     if job["song_id"] == song_id and job.get("request_id") == request_id:
@@ -415,6 +451,7 @@ class JobStore:
 
     def create(self, song_id, vocal_id, title="", take_name="", *, request_id=None):
         with self.lock:
+            self._require_active_song(song_id)
             if song_id not in self.uploads or vocal_id not in self.uploads:
                 raise HTTPException(404, "An uploaded audio file was not found. Import it again.")
             job_id = uuid4().hex
@@ -820,6 +857,24 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None, assessor=N
     @app.get("/songs")
     def songs():
         return app.state.store.songs()
+
+    @app.get("/songs/removed")
+    def removed_songs():
+        return app.state.store.songs(removed=True)
+
+    @app.post("/songs/{song_id}/remove")
+    def remove_song(song_id: str):
+        try:
+            return app.state.store.set_song_removed(song_id, True)
+        except OSError as error:
+            raise HTTPException(503, "Could not delete this song. Try again.") from error
+
+    @app.post("/songs/{song_id}/restore")
+    def restore_song(song_id: str):
+        try:
+            return app.state.store.set_song_removed(song_id, False)
+        except OSError as error:
+            raise HTTPException(503, "Could not restore this song. Try again.") from error
 
     @app.get("/songs/{song_id}/takes")
     def takes(song_id: str, selected: str = "", sort: str = "newest"):

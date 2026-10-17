@@ -54,6 +54,8 @@ The player loads aligned tracks once and automatically saves your levels with th
 
 The library is the home screen, including covers made before this feature was added. Each imported original groups its vocal takes into one song row. Search by song name or vocal filename, then select a song to open its takes and player. **Your songs** returns to the library. The waveform uses the aligned audio; playback and volume controls resize to narrow windows. **Recording details** expands the source filenames and processing notes. Opening a saved take restores its files, matched section, and mix levels without repeating separation or alignment. The Mac app and web app use the same library and saved settings when connected to the same local engine.
 
+Use the trash button beside a song to move it and all its takes to **Recently deleted**, after confirmation. You can restore them there with their recordings, mix settings, exports and analyses intact. Deletion removes a song from the library but keeps its audio on disk. The Mac library header shows the app title and **Add song**; Back appears only after opening another screen.
+
 ### Multiple takes and practice analysis
 
 Choose **Add take** inside a song to upload another performance and optionally name it. The original song is reused. Each take keeps its own volume settings, exports, and analysis. The Add song draft and each song's Add take draft have separate storage, so unfinished imports survive reopening without replacing saved covers. Switching takes preserves your position in the original song when their excerpts overlap; press Play to continue listening.

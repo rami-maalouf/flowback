@@ -3,6 +3,7 @@ test "the library is the home screen"
   clock data
   expect tree has "library"
   expect tree has "add-song"
+  expect tree has "recently-deleted"
   expect tree missing "add-form"
   expect tree missing "result"
 

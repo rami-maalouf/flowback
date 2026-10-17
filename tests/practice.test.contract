@@ -71,3 +71,37 @@ test "new take names belong to their own song"
   tap "add-take"
   clock data
   expect text "take-name" == "First song draft"
+
+test "deleting a song asks first and restores all its takes"
+  size 390x844
+  clock data
+  tap "Delete Practice fixture"
+  clock settle
+  expect tree has "confirm-delete-song"
+  tap "cancel-delete-song"
+  clock settle
+  expect state library.covers.length == 2
+  tap "Delete Practice fixture"
+  clock settle
+  tap "confirm-delete-song"
+  clock data
+  expect state library.covers.0 .title == "Other fixture"
+  expect state library.covers.length == 1
+  expect text "library-notice" == "Practice fixture moved to Recently deleted."
+  reload
+  clock data
+  expect state library.covers.length == 1
+  tap "recently-deleted"
+  clock data
+  expect state removedLibrary.covers.0 .title == "Practice fixture"
+  expect state removedLibrary.covers.0 .take_count == 3
+  tap "Restore Practice fixture"
+  clock data
+  expect tree has "deleted-empty"
+  expect text "restore-notice" == "Practice fixture restored to your songs."
+  tap "deleted-back"
+  clock data
+  tap "Open Practice fixture"
+  clock data
+  expect state takes.takes.length == 3
+  expect text "selected-take-name" == "Take 3 - noisy"
