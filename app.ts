@@ -55,6 +55,30 @@ async function attempt(run: () => Promise<void>): Promise<Result<'createCover'>>
 }
 
 const sources: Sources = {
+  loadLibrary: async (): Promise<Result<'loadLibrary'>> => {
+    try {
+      const { covers } = await (await request('/jobs')).json();
+      const labels: Record<string, string> = {
+        ready: 'Ready to play', choose: 'Choose a section', failed: 'Needs attention',
+      };
+      return { error: '', covers: covers.map((cover: {
+        id: string; song_name: string; vocal_name: string; created_at: number;
+        phase: string; duration: number; start: number; end: number;
+      }) => ({
+        id: cover.id, song_name: cover.song_name, vocal_name: cover.vocal_name,
+        saved_at: new Date(cover.created_at * 1000).toLocaleString(undefined,
+          {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}),
+        status: labels[cover.phase] || 'Processing',
+        duration: cover.duration, start: cover.start, end: cover.end,
+      })) };
+    } catch {
+      return { covers: [], error: 'Saved covers are unavailable while the audio engine is disconnected. They are still kept on this Mac.' };
+    }
+  },
+  openCover: ([jobId], _store, storage) => attempt(async () => {
+    const { job: ignored, ...session } = await (await request(`/jobs/${encodeURIComponent(jobId)}/session`)).json();
+    await save(storage, session);
+  }),
   loadSession: async (_args, _store, storage): Promise<Result<'loadSession'>> => {
     const { job_id: ignored, ...defaults } = empty;
     let saved: Saved;

@@ -34,6 +34,20 @@ shape Session
   models_available: bool
   error: string
 
+shape SavedCover
+  id: string
+  song_name: string
+  vocal_name: string
+  saved_at: string
+  status: string
+  duration: number
+  start: number
+  end: number
+
+shape Library
+  covers: SavedCover[]
+  error: string
+
 shape Reply
   ok: bool
   error: string
@@ -46,8 +60,11 @@ routes nav
 
 component ExactCover
   resource session = loadSession() as shape Session
-  mutation changed as shape Reply refreshes session
+  resource library = loadLibrary() as shape Library
+  mutation changed as shape Reply refreshes session, library
   mutation exported as shape Reply then exportPrepared
+  state browsing = false
+  state openingCover = false
   state playerReadyKey = ""
   state exportNote = ""
   state exportReady = false
@@ -71,6 +88,19 @@ component ExactCover
   action refresh
     if not pending(changed)
       refresh session
+      refresh library
+  action toggleLibrary
+    browsing = not browsing
+    refresh library
+  action openSaved(id: string)
+    browsing = false
+    if id != session.job.id
+      openingCover = true
+      playerReadyKey = ""
+      draftKey = ""
+      exportNote = ""
+      exportReady = false
+      send changed = openCover(id)
   action chooseSong
     showPicker("song-file")
   action chooseVocal
@@ -78,6 +108,7 @@ component ExactCover
   action songPicked(files: Picked[])
     match first(files)
       case some(f)
+        openingCover = false
         exportReady = false
         send changed = importAudio("song", f.path, f.name, f.size)
       case none
@@ -85,15 +116,18 @@ component ExactCover
   action vocalPicked(files: Picked[])
     match first(files)
       case some(f)
+        openingCover = false
         exportReady = false
         send changed = importAudio("vocal", f.path, f.name, f.size)
       case none
         exportNote = ""
   action create
+    openingCover = false
     exportNote = ""
     exportReady = false
     send changed = createCover()
   action choose(id: string)
+    openingCover = false
     exportNote = ""
     exportReady = false
     send changed = chooseMatch(id)
@@ -152,6 +186,27 @@ component ExactCover
               column gap=10 padding-top=16
                 text "Your voice.\nThe original backing." role="heading" aria-level=2 font-size=34 font-weight=650 line-height=1.15 testId="intro"
                 text "Bring the song and your performance. We’ll match the lyrics, align your timing, and mix just the part you sang." color="-exact-secondary-label" line-height=1.5 max-width=580
+              column gap=14
+                row gap=12 flex-wrap="wrap" align-items="center"
+                  button press=toggleLibrary buttonStyle="bordered" testId="saved-covers"
+                    text (browsing ? "Hide saved covers" : `Saved covers (${library.covers.length})`)
+                  text "Covers are kept on this Mac." font="-exact-footnote" color="-exact-secondary-label"
+                if browsing
+                  column gap=12 testId="library"
+                    text "Saved covers" role="heading" aria-level=3 font-size=20 font-weight=600
+                    if library.error != ""
+                      text library.error role="alert" color="-exact-system-red" testId="library-error"
+                    else if library.covers.length == 0
+                      text "Your covers will appear here automatically after you create one." color="-exact-secondary-label" testId="library-empty"
+                    for cover in library.covers key=cover.id
+                      column gap=8 padding=16 border-radius=12 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId=`saved-${cover.id}`
+                        text cover.song_name font-weight=600 line-clamp=2
+                        text cover.vocal_name color="-exact-secondary-label" line-clamp=2
+                        text `${cover.saved_at} · ${cover.status}${cover.duration > 0 ? ` · ${duration(cover.duration)}` : ""}` font="-exact-footnote" color="-exact-secondary-label"
+                        if cover.duration > 0
+                          text `${duration(cover.start)} - ${duration(cover.end)} in the original` font="-exact-footnote" color="-exact-secondary-label"
+                        button press=openSaved(cover.id) buttonStyle="bordered" disabled=(pending(changed) or pending(exported)) testId=`open-${cover.id}`
+                          text (cover.id == session.job.id ? "Current cover" : "Open cover")
               row gap=16 flex-wrap="wrap" align-items="stretch"
                 column flex="1 1 260px" min-width=0 padding=20 gap=14 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="song-card"
                   row gap=10 align-items="center"
@@ -177,7 +232,7 @@ component ExactCover
                 row gap=12 flex-wrap="wrap" align-items="center"
                   button press=create buttonStyle=(session.job.phase == "ready" ? "bordered" : "filled") disabled=(not canCreate) testId="create-cover"
                     text (busy ? "Creating your cover…" : session.job.id == "" ? "Create cover" : "Create again")
-                  text (pending(changed) ? "Preparing your files…" : "Only the section you sang will be exported.") font="-exact-footnote" color="-exact-secondary-label"
+                  text (pending(changed) ? (openingCover ? "Opening saved cover…" : "Preparing your files…") : "Only the section you sang will be exported.") font="-exact-footnote" color="-exact-secondary-label"
                 if not session.online
                   text "The local audio engine is unavailable. Start it, then this screen will reconnect automatically." color="-exact-secondary-label" testId="offline"
                 else if not session.models_available
