@@ -100,6 +100,40 @@ def test_stretched_vocal_keeps_audio_in_untranscribed_gap(tmp_path):
     assert np.sqrt(np.mean(gap**2)) > 0.02
 
 
+def test_unequal_pauses_preserve_phrase_onsets_ends_and_gap_audio(tmp_path):
+    rate = 24000
+    vocal = np.concatenate([tone(437, 1), tone(437, 2) * 0.1, tone(437, 1)])
+    backing = np.zeros((rate * 7, 1), dtype=np.float32)
+    result = mix_section(
+        backing, backing, vocal, rate, [Phrase(0, 1, 2, 3), Phrase(3, 4, 4, 5)], tmp_path
+    )
+    mixed, _ = sf.read(tmp_path / "mix.wav")
+
+    def rms(start, end):
+        section = mixed[round((start - result.start) * rate) : round((end - result.start) * rate)]
+        return np.sqrt(np.mean(section**2))
+
+    assert rms(2.85, 2.95) > 0.03
+    assert rms(4.05, 4.15) > 0.03
+    assert 0.001 < rms(3.3, 3.7) < 0.015
+
+
+def test_zero_target_pause_keeps_continuous_vocal(tmp_path):
+    rate = 24000
+    backing = np.zeros((rate * 6, 1), dtype=np.float32)
+    result = mix_section(
+        backing,
+        backing,
+        tone(437, 3),
+        rate,
+        [Phrase(0, 1, 2, 3), Phrase(1.5, 3, 3, 4.5)],
+        tmp_path,
+    )
+    mixed, _ = sf.read(tmp_path / "mix.wav")
+    seam = mixed[round((2.9 - result.start) * rate) : round((3.1 - result.start) * rate)]
+    assert np.sqrt(np.mean(seam**2)) > 0.02
+
+
 def test_analysis_persists_alignment_and_renders_selected_repeat(tmp_path, monkeypatch):
     song = tmp_path / "input-song.wav"
     vocal = tmp_path / "input-vocal.wav"
@@ -128,8 +162,6 @@ def test_analysis_persists_alignment_and_renders_selected_repeat(tmp_path, monke
     assert result.end == pytest.approx(16.4)
     assert progress == ["separating", "transcribing", "matching", "rendering"]
     assert sf.info(work_dir / "mix.wav").duration == pytest.approx(result.duration)
-    pipeline.render(
-        work_dir, candidates[1].id, lambda *_: None, vocal_volume=0, backing_volume=0
-    )
+    pipeline.render(work_dir, candidates[1].id, lambda *_: None, vocal_volume=0, backing_volume=0)
     assert not np.any(sf.read(work_dir / "mix.wav")[0])
     assert (song.read_bytes(), vocal.read_bytes()) == original_inputs

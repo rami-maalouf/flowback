@@ -141,8 +141,26 @@ def mix_section(
             round(phrases[-1].target_end * rate) + max(0, trailing),
         )
     )
+    segments = []
+    for phrase, (left, right) in zip(phrases, pairwise(boundaries)):
+        anchors = [left]
+        for point in (
+            (round(phrase.source_start * rate), round(phrase.target_start * rate)),
+            (round(phrase.source_end * rate), round(phrase.target_end * rate)),
+            right,
+        ):
+            if point != anchors[-1]:
+                anchors.append(point)
+        feasible = all(
+            b > a
+            and target_end > target_start
+            and 0.5 <= (b - a) / (target_end - target_start) <= 2
+            for (a, target_start), (b, target_end) in pairwise(anchors)
+        )
+        # preserve audio across impossible or extreme pauses using the continuous span.
+        segments.extend(pairwise(anchors) if feasible else [(left, right)])
     changed = False
-    for (a, target_start), (b, target_end) in pairwise(boundaries):
+    for (a, target_start), (b, target_end) in segments:
         if b <= a or target_end <= target_start:
             raise ValueError("Phrase timing is out of order. Analyze the files again.")
         duration = (target_end - target_start) / rate
