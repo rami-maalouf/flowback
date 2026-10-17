@@ -19,3 +19,6 @@ output { color: light-dark(#656972, #b5b8c1); font-variant-numeric: tabular-nums
 .footer { display: flex; align-items: center; gap: 10px; }
 p { margin: 0; font-size: 12px; line-height: 1.45; color: light-dark(#656972, #b5b8c1); }
 [hidden] { display: none; }
+
+.footer p { flex: 1; }
+.footer button { flex-shrink: 0; }

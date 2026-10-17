@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict
@@ -48,6 +49,12 @@ class MixInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     vocal_volume: float = Field(default=100, ge=0, le=200, allow_inf_nan=False, strict=True)
     backing_volume: float = Field(default=100, ge=0, le=200, allow_inf_nan=False, strict=True)
+
+
+class LevelsInput(MixInput):
+    revision: int = Field(ge=1, strict=True)
+    client_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
+    sequence: int = Field(ge=1, strict=True)
 
 
 class ExportInput(MixInput):
@@ -115,6 +122,9 @@ class JobStore:
                 defaults = _snapshot(job_id)
                 migration_fields = ("vocal_volume", "backing_volume", "revision")
                 migrated = any(field not in snapshot for field in migration_fields)
+                if "created_at" not in value:
+                    value["created_at"] = path.stat().st_mtime
+                    migrated = True
                 for field in migration_fields:
                     snapshot.setdefault(field, defaults[field])
                 if set(snapshot) != set(defaults):
@@ -187,6 +197,46 @@ class JobStore:
                 raise HTTPException(404, "This cover was not found.")
             return deepcopy(self.jobs[job_id]["snapshot"])
 
+    def saved_session(self, job_id):
+        with self.lock:
+            snapshot = self.get(job_id)
+            job = self.jobs[job_id]
+            session = {"job_id": job_id}
+            for role in ("song", "vocal"):
+                upload = self.uploads.get(job[role + "_id"], {})
+                session.update(
+                    {
+                        role + "_id": job[role + "_id"],
+                        role + "_name": upload.get(
+                            "name", "Original song" if role == "song" else "Your vocals"
+                        ),
+                        role + "_duration": upload.get("duration", 0),
+                    }
+                )
+            return {**session, "job": snapshot}
+
+    def library(self):
+        with self.lock:
+            covers = []
+            for job_id, job in sorted(
+                self.jobs.items(), key=lambda item: item[1]["created_at"], reverse=True
+            ):
+                session = self.saved_session(job_id)
+                snapshot = session["job"]
+                covers.append(
+                    {
+                        "id": job_id,
+                        "song_name": session["song_name"],
+                        "vocal_name": session["vocal_name"],
+                        "created_at": job["created_at"],
+                        "phase": snapshot["phase"],
+                        "duration": snapshot["duration"],
+                        "start": snapshot["start"],
+                        "end": snapshot["end"],
+                    }
+                )
+            return {"covers": covers}
+
     def create(self, song_id, vocal_id):
         with self.lock:
             if song_id not in self.uploads or vocal_id not in self.uploads:
@@ -194,7 +244,12 @@ class JobStore:
             job_id = uuid4().hex
             self.work_dir(job_id).mkdir(parents=True)
             snapshot = _snapshot(job_id)
-            self.jobs[job_id] = {"song_id": song_id, "vocal_id": vocal_id, "snapshot": snapshot}
+            self.jobs[job_id] = {
+                "song_id": song_id,
+                "vocal_id": vocal_id,
+                "snapshot": snapshot,
+                "created_at": time.time(),
+            }
             self._save(job_id)
             self.pending.put((job_id, None))
             return deepcopy(snapshot)
@@ -543,6 +598,21 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
     async def create_job(body: JobInput):
         return app.state.store.create(body.song_id, body.vocal_id)
 
+    @app.get("/jobs")
+    async def saved_covers():
+        return app.state.store.library()
+
+    @app.get("/jobs/{job_id}/session")
+    async def saved_session(job_id: str):
+        return app.state.store.saved_session(job_id)
+
+    @app.post("/jobs/{job_id}/levels")
+    async def save_levels(job_id: str, body: LevelsInput):
+        try:
+            return await asyncio.to_thread(app.state.live.save_levels, job_id, **body.model_dump())
+        except OSError as error:
+            raise HTTPException(503, "Could not save the mix levels. Retry saving.") from error
+
     @app.get("/jobs/{job_id}")
     async def get_job(job_id: str):
         return app.state.store.get(job_id)
@@ -575,7 +645,7 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
 
     @app.get("/studio/{name}")
     async def studio(name: str):
-        if name not in {"index.html", "player.js", "player.css", "mixer.js"}:
+        if name not in {"index.html", "player.js", "player.css", "mixer.js", "autosave.js"}:
             raise HTTPException(404, "Page not found.")
         return FileResponse(STUDIO / name)
 

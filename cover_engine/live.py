@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import threading
+from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
 
@@ -86,7 +87,30 @@ class LiveMixer:
                     if temporary.exists():
                         shutil.rmtree(temporary)
             self.current(job_id, revision)
-            return json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text())
+            with self.store.lock:
+                saved = self.store.jobs[job_id].get("live_levels", {}).get(str(revision))
+                return {**manifest, **(saved or {}), "levels_saved": saved is not None}
+
+    def save_levels(self, job_id, revision, vocal_volume, backing_volume, client_id, sequence):
+        with self.store.lock:
+            self.current(job_id, revision)
+            job = self.store.jobs[job_id]
+            written = job.get("level_writes", {}).get(client_id, 0)
+            if sequence <= written:
+                return {"ok": True}
+            previous = deepcopy(job)
+            job.setdefault("live_levels", {})[str(revision)] = {
+                "vocal_volume": vocal_volume,
+                "backing_volume": backing_volume,
+            }
+            job.setdefault("level_writes", {})[client_id] = sequence
+            try:
+                self.store._save(job_id)
+            except Exception:
+                self.store.jobs[job_id] = previous
+                raise
+            return {"ok": True}
 
     def track(self, job_id, revision, name):
         if name not in {"preview-vocal.wav", "preview-backing.wav", "original.wav"}:

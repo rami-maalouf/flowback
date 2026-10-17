@@ -1,4 +1,5 @@
 import { Mixer } from './mixer.js';
+import { Autosave, restoredLevels } from './autosave.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -12,6 +13,31 @@ let original = false;
 let disposed = false;
 let frame;
 const abort = new AbortController();
+const saver = new Autosave(async (payload, keepalive) => {
+  const response = await fetch(`/jobs/${encodeURIComponent(job)}/levels`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({revision, ...payload}), keepalive,
+  });
+  if (!response.ok) throw new Error('Could not save the levels.');
+}, {
+  pending(payload) {
+    try { localStorage.setItem(key, JSON.stringify({...payload, pending: true})); } catch {}
+    $('status').textContent = 'Saving levels…';
+    $('retry-save').hidden = true;
+    notify('saving');
+  },
+  saved() {
+    try { localStorage.removeItem(key); } catch {}
+    $('status').textContent = 'Levels saved on this Mac. Adjust while listening.';
+    $('retry-save').hidden = true;
+    notify('saved');
+  },
+  error() {
+    $('status').textContent = 'Levels not saved to this Mac yet.';
+    $('retry-save').hidden = false;
+    notify('save-error');
+  },
+}, crypto.randomUUID());
 
 async function request(url) {
   const response = await fetch(url, { signal: abort.signal });
@@ -31,7 +57,7 @@ function updateLevels(save = true) {
   notify(`vocal:${vocal}`);
   notify(`backing:${backing}`);
   if (save) {
-    try { localStorage.setItem(key, JSON.stringify([vocal, backing])); } catch {}
+    saver.set(vocal, backing);
   }
 }
 function compare(value) {
@@ -65,18 +91,17 @@ async function load() {
       context.decodeAudioData(await (await request(url)).arrayBuffer())));
     if (disposed) { await context.close(); return; }
     mixer = new Mixer(context, buffers, [data.vocal_peak, data.backing_peak]);
-    let levels = [data.vocal_volume, data.backing_volume];
-    try {
-      const saved = JSON.parse(localStorage.getItem(key));
-      if (Array.isArray(saved) && saved.length === 2 && saved.every(v => Number.isFinite(v) && v >= 0 && v <= 200)) levels = saved;
-    } catch {}
-    $('vocal').value = levels[0];
-    $('backing').value = levels[1];
+    let cached = null;
+    try { cached = JSON.parse(localStorage.getItem(key)); } catch {}
+    const restored = restoredLevels(data, cached);
+    $('vocal').value = restored.values[0];
+    $('backing').value = restored.values[1];
     updateLevels(false);
     $('seek').max = mixer.duration;
     $('duration').textContent = time(mixer.duration);
     document.querySelectorAll('input, button').forEach(node => { node.disabled = false; });
-    $('status').textContent = 'Adjust while listening. These levels are used for export.';
+    $('status').textContent = 'Levels saved on this Mac. Adjust while listening.';
+    if (restored.save) saver.set(...restored.values);
     notify('ready');
     tick();
   } catch (failure) {
@@ -92,8 +117,11 @@ $('cover').addEventListener('click', () => compare(false));
 $('original').addEventListener('click', () => compare(true));
 for (const name of ['vocal', 'backing']) $(name).addEventListener('input', () => { compare(false); updateLevels(); });
 $('retry').addEventListener('click', load);
+$('retry-save').addEventListener('click', () => saver.flush());
+addEventListener('online', () => saver.flush());
 addEventListener('pagehide', () => {
   disposed = true;
+  saver.close();
   abort.abort();
   cancelAnimationFrame(frame);
   mixer?.close();

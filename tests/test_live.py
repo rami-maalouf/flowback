@@ -106,3 +106,81 @@ def test_preview_failure_is_retryable_and_preserves_ready_cover(tmp_path):
         assert list((tmp_path / "jobs" / job_id / "previews").iterdir()) == []
         client.app.state.store.engine = StemEngine()
         assert client.get(f"/jobs/{job_id}/preview?revision=1").status_code == 200
+
+
+def test_saved_library_and_levels_survive_restart_without_audio_processing(tmp_path):
+    engine = StemEngine()
+    with client_for(tmp_path, engine) as client:
+        first = start_job(client)
+        await_phase(client, first, "ready")
+        second = start_job(client)
+        await_phase(client, second, "ready")
+        payload = {
+            "revision": 1,
+            "vocal_volume": 137,
+            "backing_volume": 28,
+            "client_id": "12345678-1234-1234-1234-123456789abc",
+            "sequence": 2,
+        }
+        assert client.post(f"/jobs/{first}/levels", json=payload).status_code == 200
+        assert (
+            client.post(
+                f"/jobs/{first}/levels", json={**payload, "sequence": 1, "vocal_volume": 0}
+            ).status_code
+            == 200
+        )
+        saved = client.get(f"/jobs/{first}/preview?revision=1").json()
+        assert (saved["vocal_volume"], saved["backing_volume"], saved["levels_saved"]) == (
+            137,
+            28,
+            True,
+        )
+        assert len(engine.rendered) == 2
+        assert engine.analyzed == 2
+    restored = StemEngine()
+    with client_for(tmp_path, restored) as client:
+        covers = client.get("/jobs").json()["covers"]
+        assert [cover["id"] for cover in covers] == [second, first]
+        assert all(
+            cover["created_at"] > 0 and cover["song_name"] == "voice.wav" for cover in covers
+        )
+        session = client.get(f"/jobs/{first}/session").json()
+        assert session["job_id"] == first
+        assert session["job"]["phase"] == "ready"
+        assert session["song_id"] and session["vocal_id"]
+        saved = client.get(f"/jobs/{first}/preview?revision=1").json()
+        assert (saved["vocal_volume"], saved["backing_volume"]) == (137, 28)
+        other = client.get(f"/jobs/{second}/preview?revision=1").json()
+        assert other["levels_saved"] is False
+        assert not restored.rendered and not restored.analyzed
+        assert (
+            client.post(f"/jobs/{first}/levels", json={**payload, "revision": 2}).status_code == 409
+        )
+        assert client.get("/jobs/missing/session").status_code == 404
+
+
+def test_level_save_failure_keeps_previous_settings_and_can_retry(tmp_path, monkeypatch):
+    engine = StemEngine()
+    with client_for(tmp_path, engine) as client:
+        job = start_job(client)
+        await_phase(client, job, "ready")
+        payload = {
+            "revision": 1,
+            "vocal_volume": 124,
+            "backing_volume": 51,
+            "client_id": "12345678-1234-1234-1234-123456789abc",
+            "sequence": 1,
+        }
+        store = client.app.state.store
+        save = store._save
+
+        def fail(*_):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(store, "_save", fail)
+        assert client.post(f"/jobs/{job}/levels", json=payload).status_code == 503
+        assert not store.jobs[job].get("live_levels")
+        monkeypatch.setattr(store, "_save", save)
+        assert client.post(f"/jobs/{job}/levels", json=payload).status_code == 200
+        saved = client.get(f"/jobs/{job}/preview?revision=1").json()
+        assert saved["vocal_volume"] == 124
