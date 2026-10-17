@@ -9,9 +9,15 @@ The local development service binds to 127.0.0.1:8891. Browser origins on localh
 - `GET /health`: `{ "ok": true, "models_available": bool, "message": string }`.
 - `POST /uploads`: raw audio bytes, `X-File-Name` with percent-encoded original filename. Returns `{ "id": string, "name": string, "duration": number }`. Validate by decoding with ffmpeg; accept at most 64 MiB to match Exact's file transport. Store under a generated id, never an input filename.
 - `POST /imports/youtube`: `{ "url": string }`. Accept only single YouTube video URLs, canonicalized before download. Return upload metadata plus `source_url`. Download audio with yt-dlp, ignore external configuration, refuse playlists/live streams/videos over 20 minutes, cap files at 64 MiB and the downloader at 120 seconds. Validate with ffmpeg before publishing. Temporary files are cleaned on success or failure.
-- `POST /jobs`: `{ "song_id": string, "vocal_id": string, "title"?: string }`. An optional title is trimmed and limited to 160 characters; older or unnamed covers use the original filename. Returns a job snapshot immediately. A serial background worker calls analysis. If the top candidate has coverage >= 0.75 and score exceeds the second candidate by >= 0.12, render it automatically. Otherwise wait for selection. Analysis may reject insufficient evidence instead of manufacturing a match.
+- `POST /jobs`: `{ "song_id": string, "vocal_id": string, "title"?: string, "take_name"?: string }`. Optional names are trimmed and limited to 160 characters; unnamed songs/takes use their source filenames. Returns a job snapshot immediately. A serial background worker calls analysis. If the top candidate has coverage >= 0.75 and score exceeds the second candidate by >= 0.12, render it automatically. Otherwise wait for selection. Analysis may reject insufficient evidence instead of manufacturing a match.
 - `GET /jobs`: saved covers, newest first, with title, source names, status, section times, and creation timestamp. Older jobs are migrated automatically.
-- `GET /jobs/{id}/session`: saved title, source identifiers and metadata plus the job snapshot, for reopening an existing cover without processing it again.
+- `GET /jobs/{id}/session`: saved title and `take_name`, source identifiers and metadata plus the job snapshot, for reopening an existing cover without processing it again.
+- `GET /songs`: `{songs:[...]}`. Group jobs by immutable original upload ID, with `id`, `title`, `song_name`, `created_at`, `take_count`, `latest_take_id`, `phase`, `duration`, `start`, `end`, and `vocal_name`. Identical filenames do not merge distinct imports.
+- `GET /songs/{song_id}/takes?selected={job_id}&sort={newest|lyrics|timing|pace|pitch|range}`: song identity/title and takes with names, sections, snapshots' status, comparability, and current assessment. Metric sorting requires the current method and at least 80% overlap of both selected sections; unavailable results are last. Pace ranks by distance from 100%, range by difference from reference, lyrics descending, timing/pitch difference ascending.
+- `POST /songs/{song_id}/takes`: `{vocal_id:string,name?:string}`. Reuse the original and song title, create an independent job, and return its unchanged snapshot shape.
+- `GET /jobs/{id}/assessment`: current selected section's assessment envelope. Status is `not_started`, `queued`, `running`, `ready`, or `failed`.
+- `POST /jobs/{id}/assessment`: queue or retry analysis for a ready take. Analysis runs on its own worker; failures never change the cover's playback state. Newly rendered covers queue automatically; legacy covers can be analyzed on demand.
+- `GET /jobs/{id}/practice-audio/{performance|reference}.wav`: bounded raw vocal excerpts for the current ready assessment. Each starts at local zero and retains its own timing. Reject unavailable/currently changing sections with 409 and unsupported kinds with 404. Never use corrected preview stems as evidence.
 - `POST /jobs/{id}/levels`: `{ "revision": number, "vocal_volume": number, "backing_volume": number, "client_id": uuid, "sequence": number }`. Atomically persist the live mix levels without changing the rendered audio or job revision. Ignore older or repeated sequences from the same editor; reject stale cover revisions. A failed disk write preserves the previous settings.
 - `GET /jobs/{id}`: job snapshot.
 - `POST /jobs/{id}/choose`: `{ "candidate_id": string }`. Valid only in `choose` or `ready`; queue rendering for a candidate belonging to this job.
@@ -30,9 +36,17 @@ A job snapshot has exactly these fields: `id`, `phase`, `message`, `error`, `can
 
 ## audio engine interface
 
-`cover_engine.pipeline.analyze(song: Path, vocal: Path, work_dir: Path, progress: Progress) -> list[Candidate]`
+`cover_engine.pipeline.analyze(song: Path, vocal: Path, work_dir: Path, progress: Progress, *, reference_cache: Path | None = None) -> list[Candidate]`
 
 Writes reusable stems, normalized audio, word timestamps and candidate alignment information to its private work directory. Uses pretrained separation and transcription models. Model libraries are optional until a real job is requested; missing dependencies produce an actionable error. All durations and alignment data refer to seconds.
+
+The production queue supplies a reference cache keyed by source content, model/runtime settings, package versions, and cache format. Reuse requires a complete manifest with verified artifact hashes. Legacy artifacts without provenance are not silently adopted. New transcripts preserve optional word probabilities; missing legacy probabilities stay unknown.
+
+`cover_engine.assessment.assess(work_dir: Path, candidate_id: str) -> dict`
+
+Reads `analysis.json`, `performance.wav`, and `reference.wav`, never rendered or aligned audio. A ready assessment includes `version`, `candidate_id`, `summary`, `error`, `metrics`, `notes`, both transcript strings, raw section bounds, matched `words`, `pitch.points`, and `evidence`. Each metric has `id`, `label`, `available`, `value`, `reference`, `unit`, `lower_is_better`, `detail`, and `reason`. Missing measurements use JSON null, not zero. IDs are `lyric_agreement`, `timing`, `pace`, `pitch_shape`, and `pitch_range`.
+
+Assessments persist separately from job snapshots. Cache identity includes immutable original/take identities, the selected candidate, evidence artifacts, and method version. Volume and export changes do not invalidate measurements. Interrupted analysis is retryable after restart. A result for an old candidate cannot appear as the current candidate's analysis. See [the research report](docs/research/vocal-assessment.md) for formulas, thresholds, limitations, and validation scope.
 
 `cover_engine.pipeline.render(work_dir: Path, candidate_id: str, progress: Progress, *, vocal_volume: float = 100, backing_volume: float = 100) -> RenderResult`
 
