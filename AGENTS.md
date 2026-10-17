@@ -24,3 +24,9 @@ Generated, so don't edit: `exact.mjs`, `rust-toolchain.toml`, `.cargo/config.tom
 
 - commit and push incrementally after each completed feature or fix; do not wait for a large batch of work.
 - the public repository is `rami-maalouf/flowback`.
+
+## visual identity
+
+- flowback follows wisp's turquoise palette. use `app.tamber` tokens for interface colors; keep the player css, native accent catalog, and manifest theme color aligned.
+- keep the logo playful but restrained. source artwork and its generation prompt live in `assets/`.
+- preserve `com.rami.exact-cover` and existing storage paths when changing the display name.

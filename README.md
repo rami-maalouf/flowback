@@ -1,10 +1,39 @@
 # Flowback
 
-Flowback is the public project behind the Exact Cover Mac and web prototype.
+<img src="assets/flowback-icon.png" alt="Flowback: a smiling ribbon of sound" width="128" />
+
+Your voice. The original groove.
+
+Flowback is a Mac and web app for making covers from your own vocal recordings.
 
 Import an original song and a recording of yourself performing its lyrics. The app separates the backing track, matches your performance to the original words, adjusts phrase timing while preserving pitch, and exports only the section you sang.
 
 This is a local prototype with an Exact interface for macOS and web. No recording controls, voice cloning, synthesized performance, or new-lyrics mode. iOS scaffolding exists, but an iPhone cannot use this version's loopback-only processing service.
+
+## Design and identity
+
+Flowback shares Wisp’s calm turquoise palette, pale mint surfaces, deep teal dark mode, and compact native controls. A softly curved ribbon of sound gives the logo a little personality: tiny eyes, a quiet smile, and no extra decoration. The character appears in the library and empty state, while the rest of the interface stays focused on your music.
+
+| Role | Light | Dark |
+| --- | --- | --- |
+| Page | `#F2F8F7` | `#0C2427` |
+| Cards | `#FFFFFF` | `#123034` |
+| Accent text | `#086B70` | `#69DAD2` |
+| Primary action | `#08777B` | `#08777B` |
+
+- [`app.tamber`](app.tamber) defines the interface’s semantic color tokens. Errors and warnings keep their platform colors.
+- [`player.css`](cover_engine/studio/player.css) carries the matching palette into the embedded waveform player, comparison controls, and live mix sliders.
+- [`flowback-icon.png`](assets/flowback-icon.png) is the 1254px transparent PNG used in the app and manifest. Exact derives native icon sizes from it. The [generation prompt](assets/flowback-icon.prompt.txt) is kept with the artwork.
+- [`Flowback.xcassets`](modules/apple/Flowback.xcassets) supplies the native turquoise accent. Keep it and the manifest’s `theme_color` aligned with `brand.fill`.
+
+The display name is **Flowback**. The internal identifier remains `com.rami.exact-cover`, so existing saved preferences, drafts, and library connections continue to work. Audio and model storage paths are unchanged.
+
+<p>
+  <img src="docs/design/import-light.png" alt="Flowback’s pale mint Add song form" width="300" />
+  <img src="docs/design/mixer-dark.png" alt="Flowback’s deep teal waveform player with live mix controls" width="300" />
+</p>
+
+These narrow-layout previews use an empty draft and synthetic test audio.
 
 ## Run
 
@@ -17,7 +46,7 @@ bun run dev:mac
 
 The web app is served at `http://127.0.0.1:8893`. Keep the launcher terminal open while using either app. Closing a window does not stop the processing service. Ctrl+C stops a service started by that launcher. A separately started service is reused and left running.
 
-The app opens to **Your songs**. Choose **Add song**, give it a name, then add the original and your vocal performance. Import WAV, MP3, M4A, or FLAC files up to 64 MiB each. For the original, you can also select **YouTube link** and **Import song**. YouTube imports use [yt-dlp](https://github.com/yt-dlp/yt-dlp), support single public videos up to 20 minutes and 64 MiB, and fall back to file import when a video is unavailable or restricted. Provide the full original song, including its artist's vocals, and a clear recording of your own performance. Choose **Create cover**. If the words match multiple sections, select the intended section. Preview your cover or the corresponding original section, then choose **Export WAV**, followed by **Save WAV**. Output downloads use chunks, so uncompressed exports can exceed the upload limit.
+The app opens to **Your songs**. Choose **Add song**, give it a name, then add the original and your vocal performance. Import WAV, MP3, M4A, or FLAC files up to 64 MiB each. For the original, you can also select **YouTube link** and **Import**. YouTube imports use [yt-dlp](https://github.com/yt-dlp/yt-dlp), support single public videos up to 20 minutes and 64 MiB, and fall back to file import when a video is unavailable or restricted. Provide the full original song, including its artist's vocals, and a clear recording of your own performance. Choose **Create cover**. If the words match multiple sections, select the intended section. Preview your cover or the corresponding original section, then choose **Export WAV**, followed by **Save WAV**. Output downloads use chunks, so uncompressed exports can exceed the upload limit.
 
 Use **Your vocals** and **Backing track** to adjust each volume from 0% to 200% while the song plays. Changes are immediate and do not restart playback or send an audio-processing request. A small settings request saves the levels in the background. At 100%, the track uses the automatic balance; 0% mutes it. Switching to **Original** keeps your place. Moving a volume slider switches back to your cover so you hear the change.
 
