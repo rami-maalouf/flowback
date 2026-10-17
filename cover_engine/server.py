@@ -27,7 +27,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import youtube
+from .assessments import AssessmentStore, envelope
 from .live import STUDIO, LiveMixer
+from .persistence import write_json as _write_json
 
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 ACTIVE_PHASES = {"queued", "separating", "transcribing", "matching", "rendering"}
@@ -41,6 +43,14 @@ class JobInput(BaseModel):
     song_id: str = Field(min_length=1, max_length=64)
     vocal_id: str = Field(min_length=1, max_length=64)
     title: str = Field(default="", max_length=160)
+    take_name: str = Field(default="", max_length=160)
+
+
+class TakeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vocal_id: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="", max_length=160)
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class YoutubeInput(BaseModel):
@@ -69,15 +79,6 @@ class ExportInput(MixInput):
     revision: int = Field(ge=1, strict=True)
 
 
-def _write_json(path: Path, value):
-    temporary = path.with_suffix(".tmp")
-    with temporary.open("w") as file:
-        json.dump(value, file, allow_nan=False)
-        file.flush()
-        os.fsync(file.fileno())
-    temporary.replace(path)
-
-
 def _snapshot(job_id):
     return {
         "id": job_id,
@@ -97,7 +98,7 @@ def _snapshot(job_id):
 
 
 class JobStore:
-    def __init__(self, root: Path, engine):
+    def __init__(self, root: Path, engine, assessor=None):
         self.root = root
         self.engine = engine
         self.lock = threading.RLock()
@@ -105,12 +106,28 @@ class JobStore:
         self.stopping = threading.Event()
         self.uploads = {}
         self.jobs = {}
+        self.removed_songs = set()
         (root / "uploads").mkdir(parents=True, exist_ok=True)
         (root / "jobs").mkdir(parents=True, exist_ok=True)
         self._reload()
+        self.assessments = AssessmentStore(self, assessor)
         self.worker = threading.Thread(target=self._work, name="cover-engine", daemon=True)
 
     def _reload(self):
+        removed_path = self.root / "removed-songs.json"
+        if removed_path.exists():
+            removed = json.loads(removed_path.read_text())
+            if (
+                not isinstance(removed, dict)
+                or set(removed) != {"song_ids"}
+                or not isinstance(removed["song_ids"], list)
+                or any(
+                    not isinstance(song_id, str) or not re.fullmatch(r"[a-f0-9]{32}", song_id)
+                    for song_id in removed["song_ids"]
+                )
+            ):
+                raise ValueError("The saved deleted-song list is invalid.")
+            self.removed_songs = set(removed["song_ids"])
         for path in (self.root / "uploads").glob("*.json"):
             try:
                 value = json.loads(path.read_text())
@@ -209,6 +226,7 @@ class JobStore:
         with self.lock:
             snapshot = self.get(job_id)
             job = self.jobs[job_id]
+            self._require_active_song(job["song_id"])
             session = {"job_id": job_id}
             for role in ("song", "vocal"):
                 upload = self.uploads.get(job[role + "_id"], {})
@@ -221,7 +239,12 @@ class JobStore:
                         role + "_duration": upload.get("duration", 0),
                     }
                 )
-            return {**session, "title": job.get("title") or session["song_name"], "job": snapshot}
+            return {
+                **session,
+                "title": job.get("title") or session["song_name"],
+                "take_name": job.get("take_name") or session["vocal_name"],
+                "job": snapshot,
+            }
 
     def library(self):
         with self.lock:
@@ -229,6 +252,8 @@ class JobStore:
             for job_id, job in sorted(
                 self.jobs.items(), key=lambda item: item[1]["created_at"], reverse=True
             ):
+                if job["song_id"] in self.removed_songs:
+                    continue
                 session = self.saved_session(job_id)
                 snapshot = session["job"]
                 covers.append(
@@ -246,8 +271,187 @@ class JobStore:
                 )
             return {"covers": covers}
 
-    def create(self, song_id, vocal_id, title=""):
+    def songs(self, *, removed=False):
         with self.lock:
+            groups = {}
+            for job_id, job in sorted(
+                self.jobs.items(), key=lambda item: item[1]["created_at"], reverse=True
+            ):
+                song_id = job["song_id"]
+                if (song_id in self.removed_songs) != removed:
+                    continue
+                if song_id in groups:
+                    groups[song_id]["take_count"] += 1
+                    continue
+                song_name = self.uploads.get(song_id, {}).get("name", "Original song")
+                snapshot = job["snapshot"]
+                groups[song_id] = {
+                    "title": job.get("title") or song_name,
+                    "song_name": song_name,
+                    "vocal_name": self.uploads.get(job["vocal_id"], {}).get("name", "Your vocals"),
+                    "created_at": job["created_at"],
+                    "phase": snapshot["phase"],
+                    "duration": snapshot["duration"],
+                    "start": snapshot["start"],
+                    "end": snapshot["end"],
+                    "id": song_id,
+                    "take_count": 1,
+                    "latest_take_id": job_id,
+                }
+            return {"songs": list(groups.values())}
+
+    def _require_active_song(self, song_id):
+        if song_id in self.removed_songs:
+            raise HTTPException(410, "This song was deleted. Restore it from Recently deleted.")
+
+    def set_song_removed(self, song_id, removed):
+        with self.lock:
+            if not any(job["song_id"] == song_id for job in self.jobs.values()):
+                raise HTTPException(404, "This song was not found.")
+            if (song_id in self.removed_songs) != removed:
+                updated = self.removed_songs | {song_id} if removed else self.removed_songs - {song_id}
+                _write_json(self.root / "removed-songs.json", {"song_ids": sorted(updated)})
+                self.removed_songs = updated
+            return {"song_id": song_id, "removed": removed}
+
+    def takes(self, song_id, selected="", sort="newest"):
+        metrics = {
+            "lyrics": "lyric_agreement",
+            "timing": "timing",
+            "pace": "pace",
+            "pitch": "pitch_shape",
+            "range": "pitch_range",
+        }
+        if sort != "newest" and sort not in metrics:
+            raise HTTPException(
+                422, "Choose newest, lyrics, timing, pace, pitch, or range sorting."
+            )
+        with self.lock:
+            self._require_active_song(song_id)
+            jobs = sorted(
+                ((job_id, job) for job_id, job in self.jobs.items() if job["song_id"] == song_id),
+                key=lambda item: item[1]["created_at"],
+                reverse=True,
+            )
+            if not jobs:
+                raise HTTPException(404, "This song was not found.")
+            selected = selected or jobs[0][0]
+            if not any(job_id == selected for job_id, _ in jobs):
+                raise HTTPException(404, "The selected take does not belong to this song.")
+            selected_bounds = self._section(self.jobs[selected]["snapshot"])
+            takes = []
+            for job_id, job in jobs:
+                session = self.saved_session(job_id)
+                snapshot = session["job"]
+                takes.append(
+                    {
+                        "id": job_id,
+                        "name": session["take_name"],
+                        "vocal_name": session["vocal_name"],
+                        "created_at": job["created_at"],
+                        "phase": snapshot["phase"],
+                        "duration": snapshot["duration"],
+                        "start": snapshot["start"],
+                        "end": snapshot["end"],
+                        "selected_id": snapshot["selected_id"],
+                        "comparable": self._comparable(selected_bounds, self._section(snapshot)),
+                    }
+                )
+            title = self.saved_session(jobs[0][0])["title"]
+        for take in takes:
+            measured = self.assessments.get(take["id"])
+            take["assessment"] = (
+                measured
+                if measured["candidate_id"] == take["selected_id"]
+                else envelope(self.assessments.version, take["selected_id"])
+            )
+        if sort != "newest":
+
+            def ranking(take):
+                assessment = take["assessment"]
+                metric = next(
+                    (item for item in assessment["metrics"] if item["id"] == metrics[sort]), {}
+                )
+                value = metric.get("value")
+                eligible = (
+                    take["comparable"]
+                    and assessment["status"] == "ready"
+                    and assessment["version"] == self.assessments.version
+                    and metric.get("available") is True
+                    and isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                )
+                if eligible and sort == "range":
+                    reference = metric.get("reference")
+                    eligible = isinstance(reference, (int, float)) and math.isfinite(reference)
+                    value = abs(value - reference) if eligible else 0
+                elif eligible and sort == "pace":
+                    value = abs(value - 100)
+                elif eligible and sort == "lyrics":
+                    value = -value
+                return (
+                    not take["comparable"],
+                    not eligible,
+                    value if eligible else 0,
+                    -take["created_at"],
+                )
+
+            takes.sort(key=ranking)
+        return {"song_id": song_id, "title": title, "takes": takes}
+
+    @staticmethod
+    def _section(snapshot):
+        candidate = next(
+            (item for item in snapshot["candidates"] if item["id"] == snapshot["selected_id"]), None
+        )
+        if candidate is None:
+            return None
+        start, end = candidate.get("start"), candidate.get("end")
+        if (
+            not isinstance(start, (int, float))
+            or not isinstance(end, (int, float))
+            or not math.isfinite(start)
+            or not math.isfinite(end)
+            or start < 0
+            or end <= start
+        ):
+            return None
+        return start, end
+
+    @staticmethod
+    def _comparable(first, second):
+        if first is None or second is None:
+            return False
+        overlap = max(0, min(first[1], second[1]) - max(first[0], second[0]))
+        return overlap / (first[1] - first[0]) >= 0.8 and overlap / (second[1] - second[0]) >= 0.8
+
+    def add_take(self, song_id, vocal_id, name="", request_id=None):
+        with self.lock:
+            self._require_active_song(song_id)
+            if request_id is not None:
+                for job_id, job in self.jobs.items():
+                    if job["song_id"] == song_id and job.get("request_id") == request_id:
+                        if job["vocal_id"] != vocal_id:
+                            raise HTTPException(
+                                409, "This take request was already used for a different recording."
+                            )
+                        return self.get(job_id)
+            latest = max(
+                (job for job in self.jobs.values() if job["song_id"] == song_id),
+                key=lambda job: job["created_at"],
+                default=None,
+            )
+            if latest is None:
+                raise HTTPException(404, "This song was not found.")
+            title = latest.get("title") or self.uploads.get(song_id, {}).get(
+                "name", "Original song"
+            )
+            return self.create(song_id, vocal_id, title, name, request_id=request_id)
+
+    def create(self, song_id, vocal_id, title="", take_name="", *, request_id=None):
+        with self.lock:
+            self._require_active_song(song_id)
             if song_id not in self.uploads or vocal_id not in self.uploads:
                 raise HTTPException(404, "An uploaded audio file was not found. Import it again.")
             job_id = uuid4().hex
@@ -259,8 +463,16 @@ class JobStore:
                 "snapshot": snapshot,
                 "created_at": time.time(),
                 "title": title.strip(),
+                "take_name": take_name.strip(),
             }
-            self._save(job_id)
+            if request_id is not None:
+                self.jobs[job_id]["request_id"] = request_id
+            try:
+                self._save(job_id)
+            except Exception:
+                del self.jobs[job_id]
+                shutil.rmtree(self.root / "jobs" / job_id, ignore_errors=True)
+                raise
             self.pending.put((job_id, None))
             return deepcopy(snapshot)
 
@@ -319,11 +531,15 @@ class JobStore:
                 if candidate_id is None:
                     self.update(job_id, phase="separating", message="Preparing the original song")
                     job = self.jobs[job_id]
+                    options = (
+                        {"reference_cache": self.root / "references"} if self.engine is None else {}
+                    )
                     candidates = engine.analyze(
                         self.root / "uploads" / f"{job['song_id']}.audio",
                         self.root / "uploads" / f"{job['vocal_id']}.audio",
                         self.work_dir(job_id),
                         progress,
+                        **options,
                     )
                     if self.stopping.is_set():
                         continue
@@ -390,6 +606,10 @@ class JobStore:
                     except Exception:
                         self.jobs[job_id] = previous
                         raise
+                try:
+                    self.assessments.submit(job_id)
+                except Exception:
+                    LOGGER.exception("could not queue practice analysis for %s", job_id)
             except Exception as error:
                 LOGGER.exception("cover processing failed for %s", job_id)
                 try:
@@ -415,7 +635,9 @@ class JobStore:
         with self.lock:
             self.stopping.set()
         self.pending.put(None)
-        self.worker.join(timeout=1)
+        if self.worker.is_alive():
+            self.worker.join(timeout=1)
+        self.assessments.close()
 
 
 def _validate_audio(path: Path):
@@ -496,7 +718,7 @@ def _local_address(value: str, *, origin=False):
         return False
 
 
-def create_app(storage_dir: Path | str | None = None, *, engine=None):
+def create_app(storage_dir: Path | str | None = None, *, engine=None, assessor=None):
     root = Path(
         storage_dir
         or os.environ.get("EXACT_COVER_DATA_DIR", Path.home() / ".local/share/exact-cover")
@@ -504,9 +726,10 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        store = JobStore(root, engine)
+        store = JobStore(root, engine, assessor)
         app.state.store = store
         app.state.live = LiveMixer(store)
+        store.assessments.worker.start()
         store.worker.start()
         try:
             yield
@@ -629,7 +852,55 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
 
     @app.post("/jobs", status_code=202)
     async def create_job(body: JobInput):
-        return app.state.store.create(body.song_id, body.vocal_id, body.title)
+        return app.state.store.create(body.song_id, body.vocal_id, body.title, body.take_name)
+
+    @app.get("/songs")
+    def songs():
+        return app.state.store.songs()
+
+    @app.get("/songs/removed")
+    def removed_songs():
+        return app.state.store.songs(removed=True)
+
+    @app.post("/songs/{song_id}/remove")
+    def remove_song(song_id: str):
+        try:
+            return app.state.store.set_song_removed(song_id, True)
+        except OSError as error:
+            raise HTTPException(503, "Could not delete this song. Try again.") from error
+
+    @app.post("/songs/{song_id}/restore")
+    def restore_song(song_id: str):
+        try:
+            return app.state.store.set_song_removed(song_id, False)
+        except OSError as error:
+            raise HTTPException(503, "Could not restore this song. Try again.") from error
+
+    @app.get("/songs/{song_id}/takes")
+    def takes(song_id: str, selected: str = "", sort: str = "newest"):
+        return app.state.store.takes(song_id, selected, sort)
+
+    @app.post("/songs/{song_id}/takes", status_code=202)
+    def add_take(song_id: str, body: TakeInput):
+        return app.state.store.add_take(song_id, body.vocal_id, body.name, body.request_id)
+
+    @app.get("/jobs/{job_id}/assessment")
+    def assessment(job_id: str):
+        return app.state.store.assessments.get(job_id)
+
+    @app.post("/jobs/{job_id}/assessment", status_code=202)
+    def analyze_take(job_id: str):
+        try:
+            return app.state.store.assessments.submit(job_id)
+        except OSError as error:
+            raise HTTPException(
+                503, "Could not save the analysis request. Retry analysis."
+            ) from error
+
+    @app.get("/jobs/{job_id}/practice-audio/{kind}.wav")
+    async def practice_audio(job_id: str, kind: str):
+        path = await asyncio.to_thread(app.state.store.assessments.audio, job_id, kind)
+        return FileResponse(path, media_type="audio/wav", filename=f"{kind}-excerpt.wav")
 
     @app.get("/jobs")
     async def saved_covers():
@@ -685,6 +956,9 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
             "mixer.js",
             "autosave.js",
             "waveform.js",
+            "practice.js",
+            "assessment-view.js",
+            "assessment.css",
         }:
             raise HTTPException(404, "Page not found.")
         return FileResponse(STUDIO / name)

@@ -51,3 +51,23 @@ test('waveform follows the supplied audio and keeps silent sections silent', asy
   expect(shape).toEqual([0, 1]);
   expect(waveform(audio([0, 0]), audio([0, 0]), 2)).toEqual([0, 0]);
 });
+
+for (const action of ['pause', 'close']) {
+  test(`${action} prevents a pending audio resume from starting the mix`, async () => {
+    const { mixer, context, sources } = fixture();
+    let finishResume;
+    context.resume = () => new Promise(resolve => { finishResume = resolve; });
+    const opening = mixer.play();
+    await mixer[action]();
+    finishResume();
+    await opening;
+    expect(mixer.playing).toBe(false);
+    expect(sources).toHaveLength(0);
+    if (action === 'pause') {
+      context.resume = async () => {};
+      await mixer.play();
+      expect(mixer.playing).toBe(true);
+      expect(sources).toHaveLength(3);
+    }
+  });
+}

@@ -1,6 +1,8 @@
 import { Mixer } from './mixer.js';
 import { Autosave, restoredLevels } from './autosave.js';
 import { waveform } from './waveform.js';
+import { playbackStart } from './practice.js';
+import { mountAssessment } from './assessment-view.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -8,11 +10,21 @@ const job = params.get('job');
 const revision = Number(params.get('revision'));
 const key = `flowback-live:${job}:${revision}`;
 const notify = value => parent.postMessage(`${key}:${value}`, '*');
+const embedded = params.get('embedded') === '1' && parent !== window;
+const relayWheel = event => {
+  if (event.ctrlKey || event.defaultPrevented || !event.cancelable || !event.deltaY
+      || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  event.preventDefault();
+  notify(`scroll:${event.deltaMode}:${event.deltaY}`);
+};
+if (embedded) addEventListener('wheel', relayWheel, {passive: false});
 const time = seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 let mixer;
 let original = false;
 let disposed = false;
 let frame;
+let originalStart = 0;
+let lastPosition = -1;
 const abort = new AbortController();
 const saver = new Autosave(async (payload, keepalive) => {
   const response = await fetch(`/jobs/${encodeURIComponent(job)}/levels`, {
@@ -65,6 +77,7 @@ function updateLevels(save = true) {
   }
 }
 function compare(value) {
+  assessment.pause();
   original = value;
   $('mix-hint').textContent = value ? 'Listening to original' : 'Adjust while listening';
   $('cover').setAttribute('aria-pressed', String(!value));
@@ -79,6 +92,11 @@ function tick() {
   $('play').setAttribute('aria-label', mixer.playing ? 'Pause' : 'Play');
   $('seek').value = mixer.position;
   $('elapsed').textContent = time(mixer.position);
+  const position = originalStart + mixer.position;
+  if (Math.abs(position - lastPosition) >= .25) {
+    lastPosition = position;
+    notify(`position:${position}`);
+  }
   frame = requestAnimationFrame(tick);
 }
 function error(error) {
@@ -92,7 +110,10 @@ async function load() {
   notify('loading');
   let context;
   try {
-    const data = await (await request(`/jobs/${encodeURIComponent(job)}/preview?revision=${revision}`)).json();
+    const [data, snapshot] = await Promise.all([
+      request(`/jobs/${encodeURIComponent(job)}/preview?revision=${revision}`).then(response => response.json()),
+      request(`/jobs/${encodeURIComponent(job)}`).then(response => response.json()),
+    ]);
     if (disposed) return;
     context = new AudioContext();
     const buffers = await Promise.all([data.vocal_url, data.backing_url, data.original_url].map(async url =>
@@ -108,6 +129,11 @@ async function load() {
       }));
     }
     mixer = new Mixer(context, buffers, [data.vocal_peak, data.backing_peak]);
+    originalStart = snapshot.start;
+    const requestedAt = params.get('at');
+    const resume = playbackStart(Number(requestedAt) < 0 ? null : requestedAt, originalStart, mixer.duration);
+    await mixer.seek(resume.position);
+    $('position-note').hidden = !resume.moved;
     let cached = null;
     try { cached = JSON.parse(localStorage.getItem(key)); } catch {}
     const restored = restoredLevels(data, cached);
@@ -116,7 +142,7 @@ async function load() {
     updateLevels(false);
     $('seek').max = mixer.duration;
     $('duration').textContent = time(mixer.duration);
-    document.querySelectorAll('input, button').forEach(node => { node.disabled = false; });
+    document.querySelectorAll('#play, #seek, #cover, #original, #vocal, #backing').forEach(node => { node.disabled = false; });
     $('status').textContent = 'Mix saved on this Mac';
     document.body.dataset.save = 'saved';
     if (restored.save) saver.set(...restored.values);
@@ -128,6 +154,7 @@ async function load() {
   }
 }
 $('play').addEventListener('click', async () => {
+  assessment.pause();
   try { if (mixer.playing) mixer.pause(); else await mixer.play(); } catch (failure) { error(failure); }
 });
 $('seek').addEventListener('input', () => mixer.seek(Number($('seek').value)).catch(error));
@@ -139,11 +166,16 @@ $('retry-save').addEventListener('click', () => saver.flush());
 addEventListener('online', () => saver.flush());
 addEventListener('pagehide', () => {
   disposed = true;
+  if (embedded) removeEventListener('wheel', relayWheel);
   resize.disconnect();
   saver.close();
   abort.abort();
   cancelAnimationFrame(frame);
   mixer?.close();
+  assessment.close();
+});
+const assessment = mountAssessment($('assessment'), {
+  job, signal: abort.signal, changed: () => notify('assessment'), pauseMix: () => mixer?.pause(),
 });
 const resize = new ResizeObserver(() => notify(`height:${Math.ceil(document.querySelector('main').getBoundingClientRect().height + 8)}`));
 resize.observe(document.querySelector('main'));

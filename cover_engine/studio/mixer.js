@@ -20,6 +20,7 @@ export class Mixer {
     this.offset = 0;
     this.started = 0;
     this.playing = false;
+    this.playbackRevision = 0;
   }
   levels(vocal, backing, original = false) {
     const values = [...gains(vocal, backing, ...this.peaks), original ? 1 : 0];
@@ -35,8 +36,9 @@ export class Mixer {
       ? Math.max(0, this.context.currentTime - this.started) : 0));
   }
   async play() {
+    const revision = this.playbackRevision;
     await this.context.resume();
-    if (this.playing) return;
+    if (this.playing || revision !== this.playbackRevision) return;
     if (this.offset >= this.duration) this.offset = 0;
     this.started = this.context.currentTime + .03;
     this.sources = this.buffers.map((buffer, i) => {
@@ -49,6 +51,7 @@ export class Mixer {
     this.playing = true;
   }
   pause() {
+    this.playbackRevision++;
     this.offset = this.position;
     this.playing = false;
     this.sources.forEach(source => { source.stop(); source.disconnect(); });
