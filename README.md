@@ -19,9 +19,9 @@ The web app is served at `http://127.0.0.1:8893`. Keep the launcher terminal ope
 
 Import WAV, MP3, M4A, or FLAC files up to 64 MiB each. Provide the full original song, including its artist's vocals, and a clear recording of your own performance. Choose **Create cover**. If the words match multiple sections, select the intended section. Preview your cover or the corresponding original section, then choose **Prepare WAV**, followed by **Save WAV**. Output downloads use chunks, so uncompressed exports can exceed the upload limit.
 
-Use **Your vocals** and **Backing track** to set each volume from 0% to 200%, then choose **Update mix**. At 100%, the track uses the automatic balance; 0% mutes it. The updated levels apply to both playback and the exported WAV, and are saved with that cover. Updating the mix reuses the existing analysis. Apply pending level changes before exporting. Peak protection may reduce the overall output at high levels while preserving the requested balance.
+Use **Your vocals** and **Backing track** to adjust each volume from 0% to 200% while the song plays. Changes are immediate and do not restart playback or send an audio-processing request. At 100%, the track uses the automatic balance; 0% mutes it. Switching to **Original section** keeps your place. Moving a volume slider switches back to your cover so you hear the change.
 
-If a mix update fails or the engine stops during it, the previous completed mix remains available. Each completed version keeps its own export files so a new render cannot overwrite a download already in progress.
+The player loads aligned tracks once and remembers your levels locally for this cover version. Existing covers may take a moment to prepare those tracks the first time. **Prepare WAV** mixes the cached tracks with your current levels; **Save WAV** saves that export. Changing a level invalidates a previously prepared WAV. Peak protection can reduce the overall output at high levels while preserving the requested balance. Exports are immutable, so preparing a new one cannot overwrite a download in progress.
 
 Your audio stays on this Mac. The first processing job downloads pretrained model weights from their upstream hosts. Imports, intermediate audio, analysis, and finished exports persist under `~/.local/share/exact-cover`; model weights persist under `~/.cache/exact-cover/models`. Source files are never modified. There is no automatic cleanup yet.
 
@@ -30,6 +30,7 @@ Your audio stays on this Mac. The first processing job downloads pretrained mode
 - `app.contract`: responsive import, processing, match-selection, playback, and export interface.
 - `app.ts`: Exact file transport, local session persistence, and service requests.
 - `cover_engine/server.py`: local HTTP API and persistent serial job queue.
+- `cover_engine/live.py` and `cover_engine/studio/`: cached aligned tracks, synchronized Web Audio playback, and matching WAV exports.
 - `cover_engine/pipeline.py`: model orchestration and saved analysis.
 - `cover_engine/alignment.py`: subsequence lyric matching and phrase timing.
 - `cover_engine/audio.py`: decoding, pitch-preserving timing changes, mixing, and section export.

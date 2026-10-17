@@ -95,11 +95,7 @@ const sources: Sources = {
     const session = await read(storage);
     await request(`/jobs/${encodeURIComponent(session.job_id)}/choose`, post({ candidate_id }));
   }),
-  setMix: ([vocal_volume, backing_volume], _store, storage) => attempt(async () => {
-    const session = await read(storage);
-    await request(`/jobs/${encodeURIComponent(session.job_id)}/mix`, post({ vocal_volume, backing_volume }));
-  }),
-  prepareExport: ([jobId, revision], _store, storage) => attempt(async () => {
+  prepareExport: ([jobId, revision, vocal_volume, backing_volume], _store, storage) => attempt(async () => {
     const session = await read(storage);
     if (session.job_id !== jobId) throw new Error('The cover changed. Prepare the current mix again.');
     const checkMix = async () => {
@@ -109,12 +105,15 @@ const sources: Sources = {
       }
     };
     await checkMix();
+    const { download_id } = await (await request(`/jobs/${encodeURIComponent(jobId)}/export`,
+      post({ revision, vocal_volume, backing_volume }))).json();
+    if (!/^[a-f0-9]{32}$/.test(download_id)) throw new Error('The export was invalid. Try again.');
     await storage.fs.mkdir('app:/tmp/output');
     const path = 'app:/tmp/output/cover.wav';
     let offset = 0;
     let total = 0;
     do {
-      const response = await request(`/jobs/${encodeURIComponent(jobId)}/mix.wav?revision=${revision}`, {
+      const response = await request(`/jobs/${encodeURIComponent(jobId)}/downloads/${download_id}.wav`, {
         headers: { Range: `bytes=${offset}-${offset + 256 * 1024 - 1}` },
       });
       const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');

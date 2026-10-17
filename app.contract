@@ -40,7 +40,6 @@ shape Reply
 
 fn pad(n: number): string = n < 10 ? `0${n}` : `${n}`
 fn duration(n: number): string = `${floor(n / 60)}:${pad(floor(n) % 60)}`
-fn volumeLabel(n: number): string = n == 0 ? "Muted" : `${n}%`
 
 routes nav
   home "/"
@@ -49,7 +48,7 @@ component ExactCover
   resource session = loadSession() as shape Session
   mutation changed as shape Reply refreshes session
   mutation exported as shape Reply then exportPrepared
-  state comparing = false
+  state playerReadyKey = ""
   state exportNote = ""
   state exportReady = false
   state exportKey = ""
@@ -57,12 +56,12 @@ component ExactCover
   state draftKey = ""
   state draftVocal = 100
   state draftBacking = 100
-  state updatingMix = false
   derive mixKey = `${session.job.id}:${session.job.selected_id}:${session.job.revision}`
   derive vocalVolume = draftKey == mixKey ? draftVocal : session.job.vocal_volume
   derive backingVolume = draftKey == mixKey ? draftBacking : session.job.backing_volume
-  derive mixEdited = vocalVolume != session.job.vocal_volume or backingVolume != session.job.backing_volume
-  derive exportPreparedForMix = exportReady and exportKey == mixKey
+  derive playerKey = `flowback-live:${session.job.id}:${session.job.revision}:`
+  derive levelsKey = `${mixKey}:${vocalVolume}:${backingVolume}`
+  derive exportPreparedForMix = exportReady and exportKey == levelsKey
   derive busy = session.job.phase == "queued" or session.job.phase == "separating" or session.job.phase == "transcribing" or session.job.phase == "matching" or session.job.phase == "rendering"
   derive error = match changed { case some(r) => r.error, case none => "" }
   derive exportError = match exported { case some(r) => r.error, case none => "" }
@@ -79,7 +78,6 @@ component ExactCover
   action songPicked(files: Picked[])
     match first(files)
       case some(f)
-        updatingMix = false
         exportReady = false
         send changed = importAudio("song", f.path, f.name, f.size)
       case none
@@ -87,54 +85,55 @@ component ExactCover
   action vocalPicked(files: Picked[])
     match first(files)
       case some(f)
-        updatingMix = false
         exportReady = false
         send changed = importAudio("vocal", f.path, f.name, f.size)
       case none
         exportNote = ""
   action create
-    updatingMix = false
-    comparing = false
     exportNote = ""
     exportReady = false
     send changed = createCover()
   action choose(id: string)
-    updatingMix = false
-    comparing = false
     exportNote = ""
     exportReady = false
     send changed = chooseMatch(id)
-  action hearCover
-    comparing = false
-  action hearOriginal
-    comparing = true
-  action changeVocal(value: number)
-    draftKey = mixKey
-    draftVocal = value
-    draftBacking = backingVolume
-    exportReady = false
-    exportNote = ""
-  action changeBacking(value: number)
-    draftKey = mixKey
-    draftVocal = vocalVolume
-    draftBacking = value
-    exportReady = false
-    exportNote = ""
-  action updateMix
-    if mixEdited and not pending(changed) and not pending(exported) and session.job.phase == "ready"
-      updatingMix = true
-      comparing = false
-      exportReady = false
-      exportNote = ""
-      send changed = setMix(vocalVolume, backingVolume)
+  action liveMessage(data: string)
+    if data == `${playerKey}ready`
+      playerReadyKey = mixKey
+    else if data == `${playerKey}loading`
+      playerReadyKey = ""
+    else if data.startsWith(`${playerKey}vocal:`)
+      match parseNumber(data.slice(playerKey.length + 6))
+        case some(value)
+          if value >= 0 and value <= 200
+            draftKey = mixKey
+            draftVocal = value
+            draftBacking = backingVolume
+            if value != vocalVolume
+              exportReady = false
+              exportNote = ""
+        case none
+          exportReady = false
+    else if data.startsWith(`${playerKey}backing:`)
+      match parseNumber(data.slice(playerKey.length + 8))
+        case some(value)
+          if value >= 0 and value <= 200
+            draftKey = mixKey
+            draftVocal = vocalVolume
+            draftBacking = value
+            if value != backingVolume
+              exportReady = false
+              exportNote = ""
+        case none
+          exportReady = false
   action export
     exportNote = ""
-    if not mixEdited and not pending(changed) and not pending(exported) and session.job.phase == "ready"
+    if playerReadyKey == mixKey and not pending(changed) and not pending(exported) and session.job.phase == "ready"
       if exportPreparedForMix
         saveFile("export-file", "app:/tmp/output/cover.wav", "my-cover.wav")
       else
-        preparingKey = mixKey
-        send exported = prepareExport(session.job.id, session.job.revision)
+        preparingKey = levelsKey
+        send exported = prepareExport(session.job.id, session.job.revision, vocalVolume, backingVolume)
   action exportPrepared
     exportReady = exportError == ""
     exportKey = preparingKey
@@ -177,13 +176,13 @@ component ExactCover
               column gap=10
                 row gap=12 flex-wrap="wrap" align-items="center"
                   button press=create buttonStyle=(session.job.phase == "ready" ? "bordered" : "filled") disabled=(not canCreate) testId="create-cover"
-                    text (busy ? (updatingMix ? "Updating your mix…" : "Creating your cover…") : session.job.id == "" ? "Create cover" : "Create again")
-                  text (pending(changed) ? (updatingMix ? "Applying your mix levels…" : "Preparing your files…") : "Only the section you sang will be exported.") font="-exact-footnote" color="-exact-secondary-label"
+                    text (busy ? "Creating your cover…" : session.job.id == "" ? "Create cover" : "Create again")
+                  text (pending(changed) ? "Preparing your files…" : "Only the section you sang will be exported.") font="-exact-footnote" color="-exact-secondary-label"
                 if not session.online
                   text "The local audio engine is unavailable. Start it, then this screen will reconnect automatically." color="-exact-secondary-label" testId="offline"
                 else if not session.models_available
                   text "The audio engine needs its model dependencies installed before it can process a cover." color="-exact-secondary-label" testId="models-missing"
-                if error != "" and not updatingMix and not pending(changed)
+                if error != "" and not pending(changed)
                   text error color="-exact-system-red" role="alert" testId="action-error"
                 if session.error != ""
                   text session.error color="-exact-system-red" role="alert" testId="session-error"
@@ -214,34 +213,10 @@ component ExactCover
                   text `From ${duration(session.job.start)} to ${duration(session.job.end)} in the original song.` color="-exact-secondary-label" testId="result-range"
                   if session.job.error != ""
                     text session.job.error color="-exact-system-red" role="alert" testId="mix-render-error"
-                  row gap=8 flex-wrap="wrap"
-                    button press=hearCover buttonStyle=(comparing ? "bordered" : "filled") testId="hear-cover"
-                      text "Your cover"
-                    button press=hearOriginal buttonStyle=(comparing ? "filled" : "bordered") testId="hear-original"
-                      text "Original section"
-                  audio `http://127.0.0.1:8891/jobs/${session.job.id}/${comparing ? "original" : "mix"}.wav?revision=${session.job.revision}` controls=true width="100%" height=54 testId="preview"
-                  column gap=16 testId="mix-controls"
-                    text "Mix levels" font-weight=600
-                    column gap=6
-                      row align-items="center" gap=12
-                        text "Your vocals" flex=1
-                        text volumeLabel(vocalVolume) color="-exact-secondary-label" font-variant-numeric="tabular-nums" testId="vocal-volume-label"
-                      input type="range" min=0 max=200 step=5 value=vocalVolume input=changeVocal disabled=(pending(changed) or pending(exported)) aria-label="Your vocals volume" testId="vocal-volume"
-                    column gap=6
-                      row align-items="center" gap=12
-                        text "Backing track" flex=1
-                        text volumeLabel(backingVolume) color="-exact-secondary-label" font-variant-numeric="tabular-nums" testId="backing-volume-label"
-                      input type="range" min=0 max=200 step=5 value=backingVolume input=changeBacking disabled=(pending(changed) or pending(exported)) aria-label="Backing track volume" testId="backing-volume"
-                    text "100% is the automatic balance. Update the mix to apply these levels to your cover preview and WAV export." font="-exact-footnote" color="-exact-secondary-label" line-height=1.4
-                    button press=updateMix buttonStyle="bordered" disabled=(not mixEdited or pending(changed) or pending(exported)) testId="update-mix"
-                      text (pending(changed) ? "Updating mix…" : "Update mix")
-                    if mixEdited
-                      text "Update the mix before exporting. The preview still uses the saved levels." font="-exact-footnote" color="-exact-secondary-label" testId="mix-unsaved"
-                    if updatingMix and error != "" and not pending(changed)
-                      text `Could not update the mix. ${error}` color="-exact-system-red" role="alert" testId="mix-error"
+                  iframe src=`http://127.0.0.1:8891/studio/index.html?job=${session.job.id}&revision=${session.job.revision}` message=liveMessage aria-label="Live cover mixer" width="100%" height=280 border-width=0 testId="live-mixer"
                   if session.job.warning != ""
                     text session.job.warning font="-exact-footnote" color="-exact-secondary-label" testId="result-warning"
-                  button press=export buttonStyle="filled" disabled=(mixEdited or pending(changed) or pending(exported)) testId="export"
+                  button press=export buttonStyle="filled" disabled=(playerReadyKey != mixKey or pending(changed) or pending(exported)) testId="export"
                     text (pending(exported) ? "Preparing export…" : exportPreparedForMix ? "Save WAV…" : "Prepare WAV")
                   if exportError != ""
                     text exportError color="-exact-system-red" role="alert"

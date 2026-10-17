@@ -12,6 +12,7 @@ export class Mixer {
     this.duration = buffers[0].duration;
     this.nodes = buffers.map(() => {
       const node = context.createGain();
+      node.gain.value = 0;
       node.connect(context.destination);
       return node;
     });
