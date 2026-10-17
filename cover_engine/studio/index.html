@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live cover mixer</title>
+  <link rel="stylesheet" href="player.css">
+</head>
+<body>
+  <main aria-label="Live cover mixer">
+    <div class="comparison" role="group" aria-label="Compare recordings">
+      <button id="cover" aria-pressed="true" disabled>Your cover</button>
+      <button id="original" aria-pressed="false" disabled>Original section</button>
+    </div>
+    <div class="transport">
+      <button id="play" disabled aria-label="Play">Play</button>
+      <div class="timeline">
+        <input id="seek" aria-label="Playback position" type="range" min="0" max="1" step=".01" value="0" disabled>
+        <div class="times"><span id="elapsed">0:00</span><span id="duration">0:00</span></div>
+      </div>
+    </div>
+    <div class="level">
+      <label for="vocal">Your vocals</label><output id="vocal-value" for="vocal">100%</output>
+      <input id="vocal" aria-label="Your vocals volume" type="range" min="0" max="200" step="1" value="100" disabled>
+    </div>
+    <div class="level">
+      <label for="backing">Backing track</label><output id="backing-value" for="backing">100%</output>
+      <input id="backing" aria-label="Backing track volume" type="range" min="0" max="200" step="1" value="100" disabled>
+    </div>
+    <div class="footer"><p id="status" role="status">Loading aligned tracks…</p><button id="retry" hidden>Retry</button></div>
+  </main>
+  <script type="module" src="player.js"></script>
+</body>
+</html>

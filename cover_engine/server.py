@@ -24,6 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from .live import STUDIO, LiveMixer
+
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 ACTIVE_PHASES = {"queued", "separating", "transcribing", "matching", "rendering"}
 PROGRESS_PHASES = {"separating", "transcribing", "matching", "rendering"}
@@ -46,6 +48,10 @@ class MixInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     vocal_volume: float = Field(default=100, ge=0, le=200, allow_inf_nan=False, strict=True)
     backing_volume: float = Field(default=100, ge=0, le=200, allow_inf_nan=False, strict=True)
+
+
+class ExportInput(MixInput):
+    revision: int = Field(ge=1, strict=True)
 
 
 def _write_json(path: Path, value):
@@ -435,6 +441,7 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
     async def lifespan(app):
         store = JobStore(root, engine)
         app.state.store = store
+        app.state.live = LiveMixer(store)
         store.worker.start()
         try:
             yield
@@ -565,6 +572,40 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
     @app.get("/jobs/{job_id}/original.wav")
     async def original(job_id: str):
         return output(job_id, "original.wav")
+
+    @app.get("/studio/{name}")
+    async def studio(name: str):
+        if name not in {"index.html", "player.js", "player.css", "mixer.js"}:
+            raise HTTPException(404, "Page not found.")
+        return FileResponse(STUDIO / name)
+
+    @app.get("/jobs/{job_id}/preview")
+    async def preview(job_id: str, revision: int):
+        try:
+            return await asyncio.to_thread(app.state.live.prepare, job_id, revision)
+        except (ValueError, OSError, RuntimeError) as error:
+            LOGGER.exception("could not prepare live preview")
+            raise HTTPException(
+                422, "Could not load the tracks. Retry or create the cover again."
+            ) from error
+
+    @app.get("/jobs/{job_id}/preview/{revision}/{name}")
+    async def preview_track(job_id: str, revision: int, name: str):
+        return FileResponse(app.state.live.track(job_id, revision, name), media_type="audio/wav")
+
+    @app.post("/jobs/{job_id}/export")
+    async def live_export(job_id: str, body: ExportInput):
+        return await asyncio.to_thread(
+            app.state.live.export, job_id, body.revision, body.vocal_volume, body.backing_volume
+        )
+
+    @app.get("/jobs/{job_id}/downloads/{download_id}.wav")
+    async def download(job_id: str, download_id: str):
+        return FileResponse(
+            app.state.live.download(job_id, download_id),
+            media_type="audio/wav",
+            filename="my-cover.wav",
+        )
 
     return app
 

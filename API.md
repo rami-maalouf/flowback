@@ -12,6 +12,11 @@ The local development service binds to 127.0.0.1:8891. Browser origins on localh
 - `GET /jobs/{id}`: job snapshot.
 - `POST /jobs/{id}/choose`: `{ "candidate_id": string }`. Valid only in `choose` or `ready`; queue rendering for a candidate belonging to this job.
 - `POST /jobs/{id}/mix`: `{ "vocal_volume": number, "backing_volume": number }`. Percentages from 0 to 200, default 100; zero mutes a track. Valid only when ready. Queue rendering with the saved analysis and selected section, without separation or transcription. Return the queued job snapshot.
+- `GET /jobs/{id}/preview?revision=N`: prepare/cache aligned tracks once and return `duration`, `vocal_peak`, `backing_peak`, initial volumes, and `vocal_url`, `backing_url`, `original_url`. Reject stale revisions. Old covers reuse saved alignment without transcription or separation.
+- `GET /jobs/{id}/preview/{revision}/{name}`: immutable, allowlisted preview WAVs.
+- `POST /jobs/{id}/export`: `{ "revision": number, "vocal_volume": number, "backing_volume": number }`. Mix cached aligned tracks at the supplied levels and return a unique `download_id`. Leaves the ready job and preview playing; never reruns alignment.
+- `GET /jobs/{id}/downloads/{download_id}.wav`: immutable WAV export, including byte-range downloads.
+- `GET /studio/index.html?job={id}&revision=N`: shared Web Audio player for web and the Mac web view. Each buffer starts on the same AudioContext clock. Gain changes are local with a 5 ms smoothing time constant. No requests occur when moving volume sliders. Levels persist in the player's local storage for that job revision.
 - `GET /jobs/{id}/mix.wav`: rendered cover, only when ready.
 - `GET /jobs/{id}/original.wav`: same section of original song for comparison, only when ready.
 
@@ -27,8 +32,10 @@ Writes reusable stems, normalized audio, word timestamps and candidate alignment
 
 `cover_engine.pipeline.render(work_dir: Path, candidate_id: str, progress: Progress, *, vocal_volume: float = 100, backing_volume: float = 100) -> RenderResult`
 
-Uses saved analysis and the chosen match to create `mix.wav` and `original.wav` in that directory. Preserve vocal pitch and continuous audio between phrases, including sounds without transcribed words. Include brief lead-in and tail without returning the whole source song. Never overwrite input files. Volumes scale each track relative to the automatic balance; peak protection can reduce the master output to prevent clipping without changing the requested balance.
+Uses saved analysis and the chosen match to create `mix.wav`, `original.wav`, `preview-vocal.wav`, and `preview-backing.wav`. An optional `output_dir` receives the files; otherwise they go into `work_dir`. Preview stems use float WAV to preserve their full dynamic range. Preserve vocal pitch and continuous audio between phrases, including sounds without transcribed words. Include brief lead-in and tail without returning the whole source song. Never overwrite input files. Volumes scale each track relative to the automatic balance; peak protection can reduce the master output to prevent clipping without changing the requested balance.
 
 ## verification
 
 Engine tests use timestamped lyrics to check partial matches, repeated choruses, transcription errors, rejected unrelated text, and timing. Synthetic audio verifies export boundaries and pitch preservation without requiring model downloads. API tests may use an injected engine to exercise HTTP/job lifecycle; these do not prove model quality. Real separation and transcription must also be exercised when dependencies are installed. Listening to user-supplied rap/singing remains required before claiming musical accuracy.
+
+Live playback and export share the same gain rule: multiply each volume percentage by `min(1, 0.98 / (vocal_peak * vocal_volume / 100 + backing_peak * backing_volume / 100))`, with a scale of 1 when both contributions are zero. This conservative peak bound prevents clipping and preserves the requested balance. The render applies boundary fades to the stems before either path uses them.

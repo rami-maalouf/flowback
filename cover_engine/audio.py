@@ -180,11 +180,12 @@ def mix_section(
     vocal_rms = float(np.sqrt(np.mean(aligned[active] ** 2)))
     music_rms = float(np.sqrt(np.mean(instrumental[active] ** 2)))
     gain = min(8.0, max(0.15, max(0.06, music_rms * 0.9) / vocal_rms))
-    mixed = instrumental * (backing_volume / 100) + aligned * gain * (vocal_volume / 100)
-    peak = float(np.max(np.abs(mixed)))
-    if peak > 0.98:
-        mixed *= 0.98 / peak
-    _fade(mixed, round(rate * 0.01))
+    aligned *= gain
+    _fade(aligned, round(rate * 0.01))
+    _fade(instrumental, round(rate * 0.01))
+    sf.write(directory / "preview-vocal.wav", aligned, rate, subtype="FLOAT")
+    sf.write(directory / "preview-backing.wav", instrumental, rate, subtype="FLOAT")
+    mixed = mix_stems(aligned, instrumental, vocal_volume, backing_volume)
     sf.write(directory / "mix.wav", mixed, rate, subtype="PCM_24")
     sf.write(directory / "original.wav", song[start_frame:end_frame], rate, subtype="PCM_24")
     warning = "Separation can leave traces of the original vocal."
@@ -193,3 +194,15 @@ def mix_section(
     return RenderResult(
         start_frame / rate, end_frame / rate, (end_frame - start_frame) / rate, warning
     )
+
+
+def mix_stems(vocal, backing, vocal_volume, backing_volume):
+    if not all(math.isfinite(v) and 0 <= v <= 200 for v in (vocal_volume, backing_volume)):
+        raise ValueError("Volume must be between 0% and 200%.")
+    if vocal.shape != backing.shape or not vocal.size:
+        raise ValueError("The aligned tracks must have the same length and channels.")
+    voice = vocal_volume / 100
+    music = backing_volume / 100
+    bound = float(np.max(np.abs(vocal))) * voice + float(np.max(np.abs(backing))) * music
+    scale = min(1, 0.98 / bound) if bound else 1
+    return vocal * (voice * scale) + backing * (music * scale)
