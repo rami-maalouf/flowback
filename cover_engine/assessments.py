@@ -234,7 +234,7 @@ class AssessmentStore:
                 with sf.SoundFile(source) as audio:
                     first = round(start * audio.samplerate)
                     last = min(len(audio), round(end * audio.samplerate))
-                    if first >= last or end > len(audio) / audio.samplerate + 0.1:
+                    if first >= last:
                         raise ValueError("excerpt bounds exceed the original recording")
                     with NamedTemporaryFile(
                         suffix=".wav", dir=directory, delete=False

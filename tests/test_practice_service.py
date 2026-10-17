@@ -258,7 +258,13 @@ def test_metric_sort_only_ranks_comparable_usable_values(
         assert client.get(f"/songs/{song['id']}/takes?sort=talent").status_code == 422
 
 
-def test_raw_audio_endpoints_crop_uncorrected_evidence_and_allow_ranges(tmp_path):
+@pytest.mark.parametrize(
+    "reference_start,reference_end,expected_status",
+    [(0.02, 0.06, 200), (0.02, 0.5, 200), (0.2, 0.5, 409)],
+)
+def test_raw_audio_endpoints_crop_uncorrected_evidence_and_allow_ranges(
+    tmp_path, reference_start, reference_end, expected_status
+):
     import io
 
     import numpy as np
@@ -274,8 +280,8 @@ def test_raw_audio_endpoints_crop_uncorrected_evidence_and_allow_ranges(tmp_path
         def assess(self, *args):
             return {
                 **super().assess(*args),
-                "reference_start": 0.02,
-                "reference_end": 0.06,
+                "reference_start": reference_start,
+                "reference_end": reference_end,
                 "performance_start": 0.01,
                 "performance_end": 0.04,
             }
@@ -285,8 +291,14 @@ def test_raw_audio_endpoints_crop_uncorrected_evidence_and_allow_ranges(tmp_path
         _, _, job_id = create_take(client)
         await_phase(client, job_id, "ready")
         await_assessment(client, job_id)
-        for kind, start, end, sign in [("reference", 160, 480, 1), ("performance", 80, 320, -1)]:
+        for kind, start, end, sign in [
+            ("reference", round(reference_start * 8000), min(800, round(reference_end * 8000)), 1),
+            ("performance", 80, 320, -1),
+        ]:
             response = client.get(f"/jobs/{job_id}/practice-audio/{kind}.wav")
+            if kind == "reference" and expected_status != 200:
+                assert response.status_code == expected_status
+                continue
             assert response.status_code == 200, response.text
             samples, rate = sf.read(io.BytesIO(response.content))
             assert rate == 8000
