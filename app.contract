@@ -455,7 +455,7 @@ component ExactCover
                       text session.job.error color="-exact-system-red" role="alert" testId="mix-render-error"
                   row align-items="center" gap=12 flex-wrap="wrap"
                     column flex="1 1 180px" min-width=0 gap=5
-                      text "Take your cover with you" font-weight=600
+                      text "Export audio" font-weight=600
                       text "WAV audio with your current mix levels." font="-exact-footnote" color="-exact-secondary-label"
                     button press=export buttonStyle="bordered" disabled=(playerReadyKey != mixKey or pending(changed) or pending(exported)) testId="export"
                       text (pending(exported) ? "Preparing…" : exportPreparedForMix ? "Save WAV…" : "Export WAV…")
