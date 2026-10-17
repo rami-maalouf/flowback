@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -101,16 +102,47 @@ def mix_section(
         raise ValueError("The matched section falls outside the original song.")
     instrumental = backing[start_frame:end_frame].copy()
     aligned = np.zeros_like(instrumental)
-    changed = False
     for phrase in phrases:
         a, b = round(phrase.source_start * rate), round(phrase.source_end * rate)
         if a < 0 or b > len(vocal) or b <= a:
             raise ValueError("Word timestamps exceed the supplied vocal. Analyze the files again.")
-        duration = phrase.target_end - phrase.target_start
+    leading = min(
+        round(0.25 * rate),
+        round(phrases[0].source_start * rate),
+        round(phrases[0].target_start * rate) - start_frame,
+    )
+    trailing = min(
+        round(0.5 * rate),
+        len(vocal) - round(phrases[-1].source_end * rate),
+        end_frame - round(phrases[-1].target_end * rate),
+    )
+    boundaries = [
+        (
+            round(phrases[0].source_start * rate) - max(0, leading),
+            round(phrases[0].target_start * rate) - max(0, leading),
+        )
+    ]
+    boundaries.extend(
+        (
+            round((left.source_end + right.source_start) * rate / 2),
+            round((left.target_end + right.target_start) * rate / 2),
+        )
+        for left, right in pairwise(phrases)
+    )
+    boundaries.append(
+        (
+            round(phrases[-1].source_end * rate) + max(0, trailing),
+            round(phrases[-1].target_end * rate) + max(0, trailing),
+        )
+    )
+    changed = False
+    for (a, target_start), (b, target_end) in pairwise(boundaries):
+        if b <= a or target_end <= target_start:
+            raise ValueError("Phrase timing is out of order. Analyze the files again.")
+        duration = (target_end - target_start) / rate
         changed |= abs(duration - (b - a) / rate) > 0.05
         stretched = stretch_phrase(vocal[a:b], rate, duration)
-        _fade(stretched, round(rate * 0.008))
-        offset = round(phrase.target_start * rate) - start_frame
+        offset = target_start - start_frame
         source_offset = max(0, -offset)
         target_offset = max(0, offset)
         count = min(len(stretched) - source_offset, len(aligned) - target_offset)

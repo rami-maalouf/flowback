@@ -45,6 +45,32 @@ def test_unusable_stretch_is_refused():
         stretch_phrase(tone(440, 1), 24000, 8)
 
 
+def test_equal_timing_keeps_vocal_between_phrases_and_at_seams(tmp_path):
+    rate = 24000
+    vocal = tone(437, 3.4)
+    backing = np.zeros((rate * 7, 1), dtype=np.float32)
+    phrases = [Phrase(0.2, 1.2, 2.2, 3.2), Phrase(1.6, 3.1, 3.6, 5.1)]
+    result = mix_section(backing, backing, vocal, rate, phrases, tmp_path)
+    mixed, _ = sf.read(tmp_path / "mix.wav", always_2d=True)
+    offset = round((2 - result.start) * rate)
+    actual = mixed[offset : offset + len(vocal)]
+    gain = np.sum(actual * vocal) / np.sum(vocal**2)
+    gap = actual[round(1.2 * rate) : round(1.6 * rate)]
+    assert np.sqrt(np.mean(gap**2)) > 0.02
+    np.testing.assert_allclose(actual, vocal * gain, atol=2e-6)
+
+
+def test_stretched_vocal_keeps_audio_in_untranscribed_gap(tmp_path):
+    rate = 24000
+    vocal = tone(437, 3)
+    backing = np.zeros((rate * 7, 1), dtype=np.float32)
+    phrases = [Phrase(0, 1, 2, 3.2), Phrase(1.5, 3, 3.8, 5)]
+    result = mix_section(backing, backing, vocal, rate, phrases, tmp_path)
+    mixed, _ = sf.read(tmp_path / "mix.wav", always_2d=True)
+    gap = mixed[round((3.3 - result.start) * rate) : round((3.7 - result.start) * rate)]
+    assert np.sqrt(np.mean(gap**2)) > 0.02
+
+
 def test_analysis_persists_alignment_and_renders_selected_repeat(tmp_path, monkeypatch):
     song = tmp_path / "input-song.wav"
     vocal = tmp_path / "input-vocal.wav"
