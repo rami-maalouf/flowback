@@ -1,4 +1,6 @@
-# Exact Cover
+# Flowback
+
+Flowback is the public project behind the Exact Cover Mac and web prototype.
 
 Import an original song and a recording of yourself performing its lyrics. The app separates the backing track, matches your performance to the original words, adjusts phrase timing while preserving pitch, and exports only the section you sang.
 

@@ -19,3 +19,8 @@ Install `snapback4@0.4.29` above; ../exact2/snapback4/README.md has setup and se
 Generated, so don't edit: `exact.mjs`, `rust-toolchain.toml`, `.cargo/config.toml`,
 `Cargo.toml`'s `[patch.crates-io]` and this block.
 <!-- exact:end -->
+
+## delivery
+
+- commit and push incrementally after each completed feature or fix; do not wait for a large batch of work.
+- the public repository is `rami-maalouf/flowback`.
