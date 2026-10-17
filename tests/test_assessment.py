@@ -24,7 +24,7 @@ def make_words(text=TEXT, *, offset=0.4, step=0.45, confidence=True):
     ]
 
 
-def audio(words, notes=NOTES, *, gain=0.2, noise=False, silent=False):
+def audio(words, notes=NOTES, *, gain=0.2, noise=False, silent=False, phase=0):
     samples = np.zeros(int((words[-1]["end"] + 0.3) * RATE), dtype=np.float32)
     rng = np.random.default_rng(17)
     for word, note in zip(words, notes, strict=True):
@@ -34,9 +34,9 @@ def audio(words, notes=NOTES, *, gain=0.2, noise=False, silent=False):
         wave = (
             rng.normal(size=len(time))
             if noise
-            else np.sin(2 * np.pi * hz * time)
-            + 0.35 * np.sin(4 * np.pi * hz * time)
-            + 0.1 * np.sin(6 * np.pi * hz * time)
+            else np.sin(2 * np.pi * hz * time + phase)
+            + 0.35 * np.sin(4 * np.pi * hz * time + 2 * phase)
+            + 0.1 * np.sin(6 * np.pi * hz * time + 3 * phase)
         )
         fade = np.minimum(1, np.minimum(time / 0.02, (time[-1] - time) / 0.02))
         samples[start:end] = 0 if silent else gain * wave * fade
@@ -52,6 +52,7 @@ def fixture(
     gain=0.2,
     noise=False,
     silent=False,
+    phase=0,
 ):
     path.mkdir(parents=True, exist_ok=True)
     reference = reference or make_words()
@@ -74,7 +75,7 @@ def fixture(
     sf.write(path / "reference.wav", audio(reference), RATE, subtype="FLOAT")
     sf.write(
         path / "performance.wav",
-        audio(performance, notes, gain=gain, noise=noise, silent=silent),
+        audio(performance, notes, gain=gain, noise=noise, silent=silent, phase=phase),
         RATE,
         subtype="FLOAT",
     )
@@ -95,7 +96,7 @@ def identity(tmp_path_factory):
 def test_identity_has_transparent_measurements_and_json_finite(identity):
     values = metrics(identity)
     assert identity["status"] == "ready"
-    assert identity["version"] == VERSION == "practice-v1"
+    assert identity["version"] == VERSION == "practice-v2"
     assert set(values) == {"lyric_agreement", "timing", "pace", "pitch_shape", "pitch_range"}
     assert all(value["available"] for value in values.values())
     assert values["lyric_agreement"]["value"] == 100
@@ -160,7 +161,7 @@ def test_fuzzy_words_do_not_count_as_exact_asr_agreement(tmp_path):
     assert values["lyric_agreement"]["value"] == 87.5
     assert result["evidence"]["timing_anchors"] == 7
     assert "quiet" not in [word["reference"] for word in result["words"]]
-    assert "asr" in values["lyric_agreement"]["label"].lower()
+    assert "recognized" in values["lyric_agreement"]["label"].lower()
     assert "pronunciation" in values["lyric_agreement"]["detail"].lower()
 
 
@@ -249,7 +250,7 @@ def test_a_short_burst_does_not_have_a_reliable_pace_score(tmp_path):
 
 
 def test_pitch_crowding_tracking_limit_is_explicitly_unavailable(tmp_path):
-    fixture(tmp_path, notes=np.full(8, 95.5))
+    fixture(tmp_path, notes=np.full(8, 94.75))
     result = assess(tmp_path, "section-test")
     assert result["evidence"]["performance_pitch"]["boundary_fraction"] > 0.1
     assert metrics(result)["pitch_range"]["value"] is None
@@ -260,3 +261,20 @@ def test_assessment_is_deterministic(tmp_path):
     fixture(tmp_path)
     first = assess(tmp_path, "section-test")
     assert first == assess(tmp_path, "section-test")
+
+
+def test_waveform_phase_does_not_change_pitch_movement(tmp_path, identity):
+    fixture(tmp_path, phase=np.pi / 2)
+    result = metrics(assess(tmp_path, "section-test"))
+    assert result["pitch_shape"]["value"] < 0.3
+    assert result["pitch_range"]["value"] == pytest.approx(
+        metrics(identity)["pitch_range"]["value"], abs=0.3
+    )
+
+
+def test_octave_transitions_are_disclosed_without_silently_correcting_them(tmp_path):
+    fixture(tmp_path, notes=np.tile([50.0, 62.0], 4))
+    result = assess(tmp_path, "section-test")
+    assert result["evidence"]["performance_pitch"]["possible_octave_jumps"] > 0
+    assert metrics(result)["pitch_range"]["value"] == pytest.approx(12, abs=0.4)
+    assert any("musical jumps or tracking errors" in note for note in result["notes"])

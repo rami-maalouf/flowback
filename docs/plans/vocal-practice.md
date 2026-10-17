@@ -18,7 +18,7 @@ The original upload ID is the stable song identity. Group legacy jobs only when 
 
 ## measurement module contract
 
-`cover_engine/assessment.py`: `VERSION = "practice-v1"`, `assess(work_dir: Path, candidate_id: str) -> dict`.
+`cover_engine/assessment.py`: `VERSION = "practice-v2"`, `assess(work_dir: Path, candidate_id: str) -> dict`.
 
 Reads work/analysis.json, performance.wav and reference.wav only. Never reads rendered/preview audio. Returns a ready envelope including:
 
@@ -30,7 +30,9 @@ Reads work/analysis.json, performance.wav and reference.wav only. Never reads re
 - pitch: {points:[{time,reference:number|null,performance:number|null}], unit:"semitones from median"}; points are word-level medians, not a claim of precise phonetic alignment. Additional useful pitch metadata is allowed.
 - notes and summary: factual limitations and what is measurable, not ungrounded coaching.
 
-Definitions: lyric_agreement = exact ordered token matches / longer transcript length *100 within matched section, explicitly ASR agreement, not articulation. Timing = median absolute difference of exact matched word starts after removing only constant start offset, in ms. Pace = reference anchor span / performance anchor span *100. Use at least six reliable exact word anchors spanning >=2 seconds; reject low-probability anchors when probabilities exist. Preserve probability optionally in new transcription words; legacy inputs work with an explicit caveat. Pitch uses local librosa pYIN with energy, voiced and probability gates; range is P95-P5 of usable semitone estimates in this excerpt, not physiological range. Pitch shape is median absolute difference between paired word-level pitch medians after removing constant register offset. Abstain for insufficient voiced words/coverage; documented thresholds are engineering defaults, not calibrated probabilities. No timbre/MFCC/speaker identity similarity.
+Definitions: lyric_agreement = exact ordered token matches / longer transcript length *100 within matched section, explicitly ASR agreement, not articulation. Timing = median absolute difference of exact matched word starts after removing only constant start offset, in ms. Pace = reference anchor span / performance anchor span *100. Use at least six reliable exact word anchors spanning >=2 seconds; reject low-probability anchors when probabilities exist. Preserve probability optionally in new transcription words; legacy inputs work with an explicit caveat. Pitch uses local full-model torchcrepe with deterministic weighted framewise decoding, relative energy and raw/median periodicity gates; range is P95-P5 of usable semitone estimates in this excerpt, not physiological range. Pitch shape is median absolute difference between paired word-level pitch medians after removing constant register offset. Abstain for insufficient voiced words/coverage; documented thresholds are engineering defaults, not calibrated probabilities. No timbre/MFCC/speaker identity similarity.
+
+Method adjustment after real-audio validation: the first pYIN implementation passed synthetic tests but retained too little reliable reference pitch in the supplied rap excerpt. Broad-range deterministic CREPE decoding retained useful evidence while passing gain, phase, transposition, noise/silence and repeatability checks. The rejected narrow-frequency/Viterbi approach is not shipped. Method v2 invalidates the earlier local v1 cache; the [research report](../research/vocal-assessment.md) records the rationale and remaining limits.
 
 ## playback and interface contract
 

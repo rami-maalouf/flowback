@@ -10,7 +10,7 @@ import soundfile as sf
 
 from .alignment import token
 
-VERSION = "practice-v1"
+VERSION = "practice-v2"
 
 # these are engineering defaults, not calibrated probabilities of correct pronunciation or pitch.
 MIN_ASR_PROBABILITY = 0.5
@@ -19,9 +19,10 @@ MIN_ANCHOR_SPAN = 2.0
 PITCH_RATE = 16000
 PITCH_FRAME = 1024
 PITCH_HOP = 320
-PITCH_MIN_HZ = 65.40639132514966
-PITCH_MAX_HZ = 2093.004522404789
-MIN_VOICED_PROBABILITY = 0.6
+PITCH_MIN_HZ = 50.0
+PITCH_MAX_HZ = 2006.0
+PITCH_BATCH_SIZE = 128
+MIN_PERIODICITY = 0.6
 MIN_VOICED_COVERAGE = 0.2
 MIN_VOICED_SECONDS = 1.0
 PITCH_CHUNK_SECONDS = 20
@@ -109,6 +110,19 @@ class _Pitch:
         }
 
 
+def _decode_pitch(activations):
+    """use torchcrepe's local weighted-argmax rule without randomized bin weights."""
+    import torch
+
+    bins = activations.argmax(dim=1)
+    indices = torch.arange(activations.shape[1], device=activations.device)[None, :, None]
+    window = torch.abs(indices - bins[:, None, :]) <= 4
+    weights = torch.sigmoid(activations).masked_fill(~window, 0)
+    centers = 20 * indices.to(torch.float64) + 1997.3794084376191
+    cents = (weights * centers).sum(dim=1) / weights.sum(dim=1)
+    return bins, 10 * torch.pow(2, cents / 1200)
+
+
 def _pitch(path, start, end):
     empty = np.array([], dtype=float)
     info = sf.info(path)
@@ -127,43 +141,56 @@ def _pitch(path, start, end):
         return _Pitch(empty, empty, reason="No audible voiced signal in this section.")
     try:
         import librosa
+        import torch
+        import torchcrepe
     except ImportError:
         return _Pitch(empty, empty, reason="Pitch analysis requires the local model dependencies.")
     if rate != PITCH_RATE:
         samples = librosa.resample(samples, orig_sr=rate, target_sr=PITCH_RATE)
-    # bounded chunks keep the viterbi lattice small; padding supplies context across chunk edges.
+    # bounded chunks and inference batches limit memory; padding supplies context across chunk edges.
     chunk_size = PITCH_CHUNK_SECONDS * PITCH_RATE
     context = PITCH_HOP * math.ceil(PITCH_FRAME * 2 / PITCH_HOP)
-    tracks, grids, energies, probabilities, flags = [], [], [], [], []
+    tracks, grids, energies, periodicities, stable_periodicities = [], [], [], [], []
     for cursor in range(0, len(samples), chunk_size):
         stop = min(len(samples), cursor + chunk_size)
         left, right = max(0, cursor - context), min(len(samples), stop + context)
         segment = samples[left:right]
-        f0, voiced, probability = librosa.pyin(
-            segment,
-            sr=PITCH_RATE,
-            fmin=PITCH_MIN_HZ,
-            fmax=PITCH_MAX_HZ,
-            frame_length=PITCH_FRAME,
-            hop_length=PITCH_HOP,
-            fill_na=np.nan,
-        )
+        # the full supported frequency band avoids assuming a speaking or singing register.
+        # framewise decoding also avoids a viterbi endpoint bias seen on the real reference.
+        with torch.inference_mode():
+            tensor = torch.from_numpy(np.ascontiguousarray(segment))[None]
+            activations = [
+                torchcrepe.infer(frames, model="full", device="cpu").T[None]
+                for frames in torchcrepe.preprocess(
+                    tensor, PITCH_RATE, PITCH_HOP, batch_size=PITCH_BATCH_SIZE, device="cpu"
+                )
+            ]
+            frequencies, periodicity = torchcrepe.postprocess(
+                torch.cat(activations, dim=2),
+                fmin=PITCH_MIN_HZ,
+                fmax=PITCH_MAX_HZ,
+                decoder=_decode_pitch,
+                return_periodicity=True,
+            )
+            stable_periodicity = torchcrepe.filter.median(periodicity, 3)[0].numpy()
+            periodicity = periodicity[0].numpy()
+            f0 = frequencies[0].numpy()
         positions = left + np.arange(len(f0)) * PITCH_HOP
         selected = (positions >= cursor) & (positions < stop)
         rms = librosa.feature.rms(y=segment, frame_length=PITCH_FRAME, hop_length=PITCH_HOP)[0]
         tracks.append(f0[selected])
         grids.append(positions[selected] / PITCH_RATE + first / rate)
         energies.append(rms[selected])
-        probabilities.append(probability[selected])
-        flags.append(voiced[selected])
+        periodicities.append(periodicity[selected])
+        stable_periodicities.append(stable_periodicity[selected])
     frequencies = np.concatenate(tracks)
     times = np.concatenate(grids)
     energy = np.concatenate(energies)
     # a relative threshold preserves ordinary gain changes; the absolute floor rejects numerical silence.
     energy_floor = max(1e-6, float(np.percentile(energy, 95)) * 10 ** (-35 / 20))
     usable = (
-        np.concatenate(flags)
-        & (np.concatenate(probabilities) >= MIN_VOICED_PROBABILITY)
+        (np.concatenate(periodicities) >= MIN_PERIODICITY)
+        & (np.concatenate(stable_periodicities) >= MIN_PERIODICITY)
         & (energy >= energy_floor)
         & np.isfinite(frequencies)
         & (frequencies > 0)
@@ -177,9 +204,9 @@ def _pitch(path, start, end):
     near_boundary = usable & ((semitones < floor_note + 1) | (semitones > ceiling_note - 1))
     boundary = float(near_boundary.sum() / usable.sum()) if usable.any() else 0
     # an octave-sized jump can be real singing or tracking error; report it without silently correcting it.
-    delta = np.abs(semitones[2:] - semitones[:-2])
-    jumps = (delta >= 10) & (delta <= 14) & (np.diff(times, n=1)[1:] < 0.03)
-    jump_count = int(np.count_nonzero(jumps & ~np.r_[False, jumps[:-1]])) if len(jumps) else 0
+    delta = np.abs(np.diff(semitones[usable]))
+    gaps = np.diff(times[usable])
+    jump_count = int(np.count_nonzero((delta >= 10) & (delta <= 14) & (gaps <= 0.2)))
     reason = ""
     if seconds < MIN_VOICED_SECONDS or coverage < MIN_VOICED_COVERAGE:
         reason = "Not enough stable voiced audio: need 1 second and 20% usable pitch coverage."
@@ -189,7 +216,7 @@ def _pitch(path, start, end):
 
 
 def assess(work_dir: Path, candidate_id: str) -> dict:
-    """return deterministic practice-v1 measurements from the selected raw source excerpt.
+    """return deterministic practice-v2 measurements from the selected raw source excerpt.
 
     timing removes a single median start offset, never tempo drift. pitch shape centers
     each set of paired word medians; range measures p95 minus p5 in the full excerpt.
@@ -304,12 +331,12 @@ def assess(work_dir: Path, candidate_id: str) -> dict:
     result_metrics = [
         _metric(
             "lyric_agreement",
-            "ASR lyric agreement",
+            "Recognized word agreement",
             exact_count / max(len(selected_reference), len(selected_performance)) * 100,
             100,
             "%",
             False,
-            "Exact ordered transcript matches divided by the longer transcript. ASR agreement is not pronunciation or articulation accuracy.",
+            "Exact ordered speech-recognition transcript matches divided by the longer transcript. This agreement is not pronunciation or articulation accuracy.",
         ),
         _metric(
             "timing",
@@ -355,7 +382,7 @@ def assess(work_dir: Path, candidate_id: str) -> dict:
     notes = [
         "Measurements use your original recording before timing correction or mix levels.",
         "Transcription and word times can be wrong, especially in rap, backing vocals or separated audio. Check the transcript evidence.",
-        "Pitch gates are engineering defaults, not calibrated confidence scores. Word medians do not provide phonetic alignment.",
+        "CREPE periodicity gates are engineering defaults, not probabilities of correct pitch. Separation artifacts and octave errors can distort estimates; word medians do not provide phonetic alignment.",
     ]
     if unknown:
         notes.append(
@@ -372,7 +399,7 @@ def assess(work_dir: Path, candidate_id: str) -> dict:
             )
         if track.boundary_fraction > 0:
             notes.append(
-                f"{label}: some pitch estimates are near the tracking limits of 65 to 2093 Hz."
+                f"{label}: some pitch estimates are near the tracking limits of 50 to 2006 Hz."
             )
     available = sum(metric["available"] for metric in result_metrics)
     return {
@@ -418,6 +445,10 @@ def assess(work_dir: Path, candidate_id: str) -> dict:
         "evidence": {
             "audio_sources": ["reference.wav", "performance.wav"],
             "timestamp_provenance": "ASR word timestamps, not forced phoneme alignment",
+            "pitch_method": "CREPE full, deterministic local weighted argmax",
+            "pitch_sample_rate": PITCH_RATE,
+            "pitch_hop_seconds": PITCH_HOP / PITCH_RATE,
+            "pitch_frequency_limits_hz": [PITCH_MIN_HZ, PITCH_MAX_HZ],
             "reference_words": len(selected_reference),
             "performance_words": len(selected_performance),
             "exact_ordered_matches": exact_count,
@@ -432,7 +463,9 @@ def assess(work_dir: Path, candidate_id: str) -> dict:
             "performance_pitch": performance_pitch.evidence(),
             "thresholds": {
                 "asr_probability": MIN_ASR_PROBABILITY,
-                "voiced_probability": MIN_VOICED_PROBABILITY,
+                "periodicity": MIN_PERIODICITY,
+                "periodicity_median_frames": 3,
+                "octave_warning_max_gap_seconds": 0.2,
                 "minimum_anchors": MIN_ANCHORS,
                 "minimum_anchor_span_seconds": MIN_ANCHOR_SPAN,
                 "minimum_voiced_coverage": MIN_VOICED_COVERAGE,

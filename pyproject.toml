@@ -19,6 +19,7 @@ models = [
     "av>=11,<17",
     "faster-whisper>=1.2,<2",
     "librosa>=0.10,<1",
+    "torchcrepe==0.0.24",
 ]
 
 [dependency-groups]
