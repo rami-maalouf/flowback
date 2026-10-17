@@ -23,7 +23,8 @@ def test_persistence_failure_does_not_strand_jobs_after_storage_recovers(tmp_pat
             progress("matching", "Finding your section")
             return [Candidate("verse", "Verse", 0, 1, 1, 1, "three distinct words")]
 
-        def render(self, work_dir, candidate_id, progress):
+        def render(self, work_dir, candidate_id, progress, *, output_dir=None, **volumes):
+            work_dir = output_dir if output_dir is not None else work_dir
             (work_dir / "mix.wav").write_bytes(audio)
             (work_dir / "original.wav").write_bytes(audio)
             return RenderResult(0, 1, 1, "")

@@ -45,6 +45,95 @@ def test_unusable_stretch_is_refused():
         stretch_phrase(tone(440, 1), 24000, 8)
 
 
+def test_independent_levels_control_exported_audio_and_allow_muting(tmp_path):
+    rate = 24000
+    backing = tone(220, 5)
+    vocal = tone(440, 2)
+    phrases = [Phrase(0, 2, 1, 3)]
+
+    def render(vocal_volume, backing_volume):
+        mix_section(
+            backing,
+            backing,
+            vocal,
+            rate,
+            phrases,
+            tmp_path,
+            vocal_volume=vocal_volume,
+            backing_volume=backing_volume,
+        )
+        return sf.read(tmp_path / "mix.wav")[0]
+
+    voice = render(100, 0)
+    music = render(0, 100)
+    assert np.max(abs(voice)) > 0.01
+    assert np.max(abs(music)) > 0.01
+    np.testing.assert_allclose(render(50, 100), voice * 0.5 + music, atol=4e-7)
+    np.testing.assert_allclose(render(100, 25), voice + music * 0.25, atol=4e-7)
+    assert not np.any(render(0, 0))
+    assert np.max(abs(render(200, 200))) <= 0.981
+
+
+def test_equal_timing_keeps_vocal_between_phrases_and_at_seams(tmp_path):
+    rate = 24000
+    vocal = tone(437, 3.4)
+    backing = np.zeros((rate * 7, 1), dtype=np.float32)
+    phrases = [Phrase(0.2, 1.2, 2.2, 3.2), Phrase(1.6, 3.1, 3.6, 5.1)]
+    result = mix_section(backing, backing, vocal, rate, phrases, tmp_path)
+    mixed, _ = sf.read(tmp_path / "mix.wav", always_2d=True)
+    offset = round((2 - result.start) * rate)
+    actual = mixed[offset : offset + len(vocal)]
+    gain = np.sum(actual * vocal) / np.sum(vocal**2)
+    gap = actual[round(1.2 * rate) : round(1.6 * rate)]
+    assert np.sqrt(np.mean(gap**2)) > 0.02
+    np.testing.assert_allclose(actual, vocal * gain, atol=2e-6)
+
+
+def test_stretched_vocal_keeps_audio_in_untranscribed_gap(tmp_path):
+    rate = 24000
+    vocal = tone(437, 3)
+    backing = np.zeros((rate * 7, 1), dtype=np.float32)
+    phrases = [Phrase(0, 1, 2, 3.2), Phrase(1.5, 3, 3.8, 5)]
+    result = mix_section(backing, backing, vocal, rate, phrases, tmp_path)
+    mixed, _ = sf.read(tmp_path / "mix.wav", always_2d=True)
+    gap = mixed[round((3.3 - result.start) * rate) : round((3.7 - result.start) * rate)]
+    assert np.sqrt(np.mean(gap**2)) > 0.02
+
+
+def test_unequal_pauses_preserve_phrase_onsets_ends_and_gap_audio(tmp_path):
+    rate = 24000
+    vocal = np.concatenate([tone(437, 1), tone(437, 2) * 0.1, tone(437, 1)])
+    backing = np.zeros((rate * 7, 1), dtype=np.float32)
+    result = mix_section(
+        backing, backing, vocal, rate, [Phrase(0, 1, 2, 3), Phrase(3, 4, 4, 5)], tmp_path
+    )
+    mixed, _ = sf.read(tmp_path / "mix.wav")
+
+    def rms(start, end):
+        section = mixed[round((start - result.start) * rate) : round((end - result.start) * rate)]
+        return np.sqrt(np.mean(section**2))
+
+    assert rms(2.85, 2.95) > 0.03
+    assert rms(4.05, 4.15) > 0.03
+    assert 0.001 < rms(3.3, 3.7) < 0.015
+
+
+def test_zero_target_pause_keeps_continuous_vocal(tmp_path):
+    rate = 24000
+    backing = np.zeros((rate * 6, 1), dtype=np.float32)
+    result = mix_section(
+        backing,
+        backing,
+        tone(437, 3),
+        rate,
+        [Phrase(0, 1, 2, 3), Phrase(1.5, 3, 3, 4.5)],
+        tmp_path,
+    )
+    mixed, _ = sf.read(tmp_path / "mix.wav")
+    seam = mixed[round((2.9 - result.start) * rate) : round((3.1 - result.start) * rate)]
+    assert np.sqrt(np.mean(seam**2)) > 0.02
+
+
 def test_analysis_persists_alignment_and_renders_selected_repeat(tmp_path, monkeypatch):
     song = tmp_path / "input-song.wav"
     vocal = tmp_path / "input-vocal.wav"
@@ -73,4 +162,6 @@ def test_analysis_persists_alignment_and_renders_selected_repeat(tmp_path, monke
     assert result.end == pytest.approx(16.4)
     assert progress == ["separating", "transcribing", "matching", "rendering"]
     assert sf.info(work_dir / "mix.wav").duration == pytest.approx(result.duration)
+    pipeline.render(work_dir, candidates[1].id, lambda *_: None, vocal_volume=0, backing_volume=0)
+    assert not np.any(sf.read(work_dir / "mix.wav")[0])
     assert (song.read_bytes(), vocal.read_bytes()) == original_inputs

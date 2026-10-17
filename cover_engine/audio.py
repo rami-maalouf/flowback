@@ -1,5 +1,7 @@
+import math
 import shutil
 import subprocess
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -89,7 +91,12 @@ def mix_section(
     rate: int,
     phrases: list[Phrase],
     directory: Path,
+    *,
+    vocal_volume: float = 100,
+    backing_volume: float = 100,
 ) -> RenderResult:
+    if not all(math.isfinite(v) and 0 <= v <= 200 for v in (vocal_volume, backing_volume)):
+        raise ValueError("Volume must be between 0% and 200%.")
     if not phrases:
         raise ValueError("No phrases were aligned. Analyze the files again.")
     channels = song.shape[1]
@@ -101,16 +108,65 @@ def mix_section(
         raise ValueError("The matched section falls outside the original song.")
     instrumental = backing[start_frame:end_frame].copy()
     aligned = np.zeros_like(instrumental)
-    changed = False
     for phrase in phrases:
         a, b = round(phrase.source_start * rate), round(phrase.source_end * rate)
         if a < 0 or b > len(vocal) or b <= a:
             raise ValueError("Word timestamps exceed the supplied vocal. Analyze the files again.")
-        duration = phrase.target_end - phrase.target_start
+    leading = min(
+        round(0.25 * rate),
+        round(phrases[0].source_start * rate),
+        round(phrases[0].target_start * rate) - start_frame,
+    )
+    trailing = min(
+        round(0.5 * rate),
+        len(vocal) - round(phrases[-1].source_end * rate),
+        end_frame - round(phrases[-1].target_end * rate),
+    )
+    boundaries = [
+        (
+            round(phrases[0].source_start * rate) - max(0, leading),
+            round(phrases[0].target_start * rate) - max(0, leading),
+        )
+    ]
+    boundaries.extend(
+        (
+            round((left.source_end + right.source_start) * rate / 2),
+            round((left.target_end + right.target_start) * rate / 2),
+        )
+        for left, right in pairwise(phrases)
+    )
+    boundaries.append(
+        (
+            round(phrases[-1].source_end * rate) + max(0, trailing),
+            round(phrases[-1].target_end * rate) + max(0, trailing),
+        )
+    )
+    segments = []
+    for phrase, (left, right) in zip(phrases, pairwise(boundaries)):
+        anchors = [left]
+        for point in (
+            (round(phrase.source_start * rate), round(phrase.target_start * rate)),
+            (round(phrase.source_end * rate), round(phrase.target_end * rate)),
+            right,
+        ):
+            if point != anchors[-1]:
+                anchors.append(point)
+        feasible = all(
+            b > a
+            and target_end > target_start
+            and 0.5 <= (b - a) / (target_end - target_start) <= 2
+            for (a, target_start), (b, target_end) in pairwise(anchors)
+        )
+        # preserve audio across impossible or extreme pauses using the continuous span.
+        segments.extend(pairwise(anchors) if feasible else [(left, right)])
+    changed = False
+    for (a, target_start), (b, target_end) in segments:
+        if b <= a or target_end <= target_start:
+            raise ValueError("Phrase timing is out of order. Analyze the files again.")
+        duration = (target_end - target_start) / rate
         changed |= abs(duration - (b - a) / rate) > 0.05
         stretched = stretch_phrase(vocal[a:b], rate, duration)
-        _fade(stretched, round(rate * 0.008))
-        offset = round(phrase.target_start * rate) - start_frame
+        offset = target_start - start_frame
         source_offset = max(0, -offset)
         target_offset = max(0, offset)
         count = min(len(stretched) - source_offset, len(aligned) - target_offset)
@@ -124,11 +180,12 @@ def mix_section(
     vocal_rms = float(np.sqrt(np.mean(aligned[active] ** 2)))
     music_rms = float(np.sqrt(np.mean(instrumental[active] ** 2)))
     gain = min(8.0, max(0.15, max(0.06, music_rms * 0.9) / vocal_rms))
-    mixed = instrumental + aligned * gain
-    peak = float(np.max(np.abs(mixed)))
-    if peak > 0.98:
-        mixed *= 0.98 / peak
-    _fade(mixed, round(rate * 0.01))
+    aligned *= gain
+    _fade(aligned, round(rate * 0.01))
+    _fade(instrumental, round(rate * 0.01))
+    sf.write(directory / "preview-vocal.wav", aligned, rate, subtype="FLOAT")
+    sf.write(directory / "preview-backing.wav", instrumental, rate, subtype="FLOAT")
+    mixed = mix_stems(aligned, instrumental, vocal_volume, backing_volume)
     sf.write(directory / "mix.wav", mixed, rate, subtype="PCM_24")
     sf.write(directory / "original.wav", song[start_frame:end_frame], rate, subtype="PCM_24")
     warning = "Separation can leave traces of the original vocal."
@@ -137,3 +194,15 @@ def mix_section(
     return RenderResult(
         start_frame / rate, end_frame / rate, (end_frame - start_frame) / rate, warning
     )
+
+
+def mix_stems(vocal, backing, vocal_volume, backing_volume):
+    if not all(math.isfinite(v) and 0 <= v <= 200 for v in (vocal_volume, backing_volume)):
+        raise ValueError("Volume must be between 0% and 200%.")
+    if vocal.shape != backing.shape or not vocal.size:
+        raise ValueError("The aligned tracks must have the same length and channels.")
+    voice = vocal_volume / 100
+    music = backing_volume / 100
+    bound = float(np.max(np.abs(vocal))) * voice + float(np.max(np.abs(backing))) * music
+    scale = min(1, 0.98 / bound) if bound else 1
+    return vocal * (voice * scale) + backing * (music * scale)

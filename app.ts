@@ -5,36 +5,41 @@ export const grants = 'net.fetch http://127.0.0.1:8891\nfs.read app:/tmp/picked\
 
 const origin = 'http://127.0.0.1:8891';
 const sessionPath = 'app:/data/session.json';
+const draftPath = 'app:/data/draft.json';
 const emptyJob: Result<'loadSession'>['job'] = {
   id: '', phase: 'idle', message: '', error: '', candidates: [], selected_id: '',
-  start: 0, end: 0, duration: 0, warning: '',
+  start: 0, end: 0, duration: 0, warning: '', vocal_volume: 100, backing_volume: 100, revision: 0,
 };
 type Saved = {
+  title: string;
   song_id: string; song_name: string; song_duration: number;
   vocal_id: string; vocal_name: string; vocal_duration: number; job_id: string;
 };
 const empty: Saved = {
+  title: '',
   song_id: '', song_name: '', song_duration: 0,
   vocal_id: '', vocal_name: '', vocal_duration: 0, job_id: '',
 };
 const ok = { ok: true, error: '' };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-async function read(storage: Storage): Promise<Saved> {
+async function read(storage: Storage, path = sessionPath): Promise<Saved> {
   try {
-    return { ...empty, ...JSON.parse(new TextDecoder().decode(await storage.fs.readFile(sessionPath))) };
+    return { ...empty, ...JSON.parse(new TextDecoder().decode(await storage.fs.readFile(path))) };
   } catch (error) {
     if ((error as { code?: string }).code === 'ENOENT') return { ...empty };
     throw error;
   }
 }
 
-async function save(storage: Storage, session: Saved) {
-  await storage.fs.atomicWriteFile(sessionPath, new TextEncoder().encode(JSON.stringify(session)));
+async function save(storage: Storage, session: Saved, path = sessionPath) {
+  await storage.fs.atomicWriteFile(path, new TextEncoder().encode(JSON.stringify(session)));
 }
 
 async function request(path: string, options?: RequestInit) {
-  const response = await fetch(`${origin}${path}`, options);
+  let response: Response;
+  try { response = await fetch(`${origin}${path}`, options); }
+  catch { throw new Error('Could not reach the local audio engine. Check that it is running, then try again.'); }
   if (!response.ok) {
     let detail = `The audio engine returned an error (${response.status}).`;
     try { detail = String((await response.json()).detail || detail); } catch {}
@@ -52,7 +57,44 @@ async function attempt(run: () => Promise<void>): Promise<Result<'createCover'>>
   catch (error) { return { ok: false, error: message(error) }; }
 }
 
+function displayTitle(title: string, file: string) {
+  if (title && title !== file) return title;
+  return (file || 'Untitled song').replace(/\.(wav|mp3|m4a|flac|ogg|aac|aiff|webm)$/i, '')
+    .split(/[-_ ]+/).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+
 const sources: Sources = {
+  loadDraft: async (_args, _store, storage) => {
+    const { title: ignoredTitle, job_id: ignoredJob, ...files } = empty;
+    try {
+      const { title, job_id, ...draft } = await read(storage, draftPath);
+      return { ...draft, error: '' };
+    } catch (error) { return { ...files, error: message(error) }; }
+  },
+  loadLibrary: async (): Promise<Result<'loadLibrary'>> => {
+    try {
+      const { covers } = await (await request('/jobs')).json();
+      const labels: Record<string, string> = {
+        ready: 'Ready to play', choose: 'Choose a section', failed: 'Needs attention',
+      };
+      return { error: '', covers: covers.map((cover: {
+        id: string; title: string; song_name: string; vocal_name: string; created_at: number;
+        phase: string; duration: number; start: number; end: number;
+      }) => ({
+        phase: cover.phase, id: cover.id, title: displayTitle(cover.title, cover.song_name), song_name: cover.song_name, vocal_name: cover.vocal_name,
+        saved_at: new Date(cover.created_at * 1000).toLocaleString(undefined,
+          {month: 'short', day: 'numeric'}),
+        status: labels[cover.phase] || 'Processing',
+        duration: cover.duration, start: cover.start, end: cover.end,
+      })) };
+    } catch {
+      return { covers: [], error: 'Saved covers are unavailable while the audio engine is disconnected. They are still kept on this Mac.' };
+    }
+  },
+  openCover: ([jobId], _store, storage) => attempt(async () => {
+    const { job: ignored, ...session } = await (await request(`/jobs/${encodeURIComponent(jobId)}/session`)).json();
+    await save(storage, { ...empty, ...session, title: session.title || session.song_name });
+  }),
   loadSession: async (_args, _store, storage): Promise<Result<'loadSession'>> => {
     const { job_id: ignored, ...defaults } = empty;
     let saved: Saved;
@@ -61,7 +103,7 @@ const sources: Sources = {
       return { ...defaults, job: emptyJob, online: false, models_available: false, error: message(error) };
     }
     const { job_id, ...files } = saved;
-    const result: Result<'loadSession'> = { ...files, job: emptyJob, online: false, models_available: false, error: '' };
+    const result: Result<'loadSession'> = { ...files, title: displayTitle(files.title, files.song_name), job: emptyJob, online: false, models_available: false, error: '' };
     try {
       const health = await (await request('/health')).json();
       result.online = health.ok === true;
@@ -78,29 +120,55 @@ const sources: Sources = {
     if (role !== 'song' && role !== 'vocal') throw new Error('Choose a song or vocal file.');
     const options = { method: 'POST', headers: { 'X-File-Name': encodeURIComponent(name) }, exactBodyFrom: path };
     const uploaded = await (await request('/uploads', options)).json();
-    const session = await read(storage);
+    const session = await read(storage, draftPath);
     const next = role === 'song'
       ? { ...session, song_id: uploaded.id, song_name: uploaded.name, song_duration: uploaded.duration }
       : { ...session, vocal_id: uploaded.id, vocal_name: uploaded.name, vocal_duration: uploaded.duration };
-    await save(storage, { ...next, job_id: '' });
+    await save(storage, { ...next, job_id: '' }, draftPath);
   }),
-  createCover: (_args, _store, storage) => attempt(async () => {
+  importYoutubeAudio: ([url], _store, storage) => attempt(async () => {
+    const uploaded = await (await request('/imports/youtube', post({ url }))).json();
+    const draft = await read(storage, draftPath);
+    await save(storage, { ...draft, song_id: uploaded.id, song_name: uploaded.name,
+      song_duration: uploaded.duration }, draftPath);
+  }),
+  createCover: ([title], _store, storage) => attempt(async () => {
+    const session = await read(storage, draftPath);
+    const name = title.trim() || session.song_name.slice(0, 160);
+    if (name.length > 160) throw new Error('Keep the song name within 160 characters.');
+    const job = await (await request('/jobs', post({ song_id: session.song_id, vocal_id: session.vocal_id, title: name }))).json();
+    await save(storage, { ...session, title: name, job_id: job.id });
+    await save(storage, empty, draftPath);
+  }),
+  retryCover: (_args, _store, storage) => attempt(async () => {
     const session = await read(storage);
-    const job = await (await request('/jobs', post({ song_id: session.song_id, vocal_id: session.vocal_id }))).json();
+    const job = await (await request('/jobs', post({ song_id: session.song_id,
+      vocal_id: session.vocal_id, title: session.title.slice(0, 160) }))).json();
     await save(storage, { ...session, job_id: job.id });
   }),
   chooseMatch: ([candidate_id], _store, storage) => attempt(async () => {
     const session = await read(storage);
     await request(`/jobs/${encodeURIComponent(session.job_id)}/choose`, post({ candidate_id }));
   }),
-  prepareExport: (_args, _store, storage) => attempt(async () => {
+  prepareExport: ([jobId, revision, vocal_volume, backing_volume], _store, storage) => attempt(async () => {
     const session = await read(storage);
+    if (session.job_id !== jobId) throw new Error('The cover changed. Prepare the current mix again.');
+    const checkMix = async () => {
+      const job = await (await request(`/jobs/${encodeURIComponent(jobId)}`)).json();
+      if (job.phase !== 'ready' || job.revision !== revision) {
+        throw new Error('The mix changed. Wait for it to finish, then prepare the WAV again.');
+      }
+    };
+    await checkMix();
+    const { download_id } = await (await request(`/jobs/${encodeURIComponent(jobId)}/export`,
+      post({ revision, vocal_volume, backing_volume }))).json();
+    if (!/^[a-f0-9]{32}$/.test(download_id)) throw new Error('The export was invalid. Try again.');
     await storage.fs.mkdir('app:/tmp/output');
     const path = 'app:/tmp/output/cover.wav';
     let offset = 0;
     let total = 0;
     do {
-      const response = await request(`/jobs/${encodeURIComponent(session.job_id)}/mix.wav`, {
+      const response = await request(`/jobs/${encodeURIComponent(jobId)}/downloads/${download_id}.wav`, {
         headers: { Range: `bytes=${offset}-${offset + 256 * 1024 - 1}` },
       });
       const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
@@ -118,6 +186,7 @@ const sources: Sources = {
       offset += bytes.length;
       total = Number(range[3]);
     } while (offset < total);
+    await checkMix();
   }),
 };
 

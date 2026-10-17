@@ -1,15 +1,41 @@
-test "file import is the primary workflow"
+test "the library is the home screen"
   size 900x760
   clock data
-  expect tree has "song-card"
-  expect tree has "vocal-card"
-  expect text "song-name" == "Start with the full song"
-  expect text "vocal-name" == "A verse, a chorus, or all of it"
+  expect tree has "library"
+  expect tree has "add-song"
+  expect tree missing "add-form"
   expect tree missing "result"
 
-test "the import screen fits a phone"
+test "adding a song has its own form and returns to the library"
   size 390x844
   clock data
+  tap "add-song"
+  clock settle
+  expect tree has "song-title"
   expect tree has "choose-song"
   expect tree has "choose-vocal"
   expect tree has "create-cover"
+  type "song-title" "Dots & Lines"
+  tap "add-back"
+  clock settle
+  expect tree missing "add-form"
+  tap "add-song"
+  clock settle
+  expect state title == "Dots & Lines"
+  reload
+  clock data
+  expect state title == "Dots & Lines"
+  expect tree missing "result"
+
+test "a bad youtube link keeps the form available"
+  size 390x844
+  clock data
+  tap "add-song"
+  clock settle
+  tap "source-youtube"
+  type "youtube-url" "https://example.com/music"
+  tap "import-youtube"
+  clock data
+  expect text "action-error" == "Paste a link to a single YouTube video, or choose an audio file."
+  expect tree has "vocal-card"
+  expect tree missing "cover-detail"

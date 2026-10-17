@@ -9,6 +9,7 @@ dependencies = [
   "numpy>=1.26,<3",
   "soundfile>=0.13,<1",
   "pedalboard>=0.9.22,<1",
+  "yt-dlp[default]>=2025.1.1",
 ]
 
 [project.optional-dependencies]

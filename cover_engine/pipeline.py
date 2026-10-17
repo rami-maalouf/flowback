@@ -142,7 +142,15 @@ def analyze(song: Path, vocal: Path, work_dir: Path, progress: Progress) -> list
         raise RuntimeError(f"{phase.capitalize()} failed: {error}.{hint}") from error
 
 
-def render(work_dir: Path, candidate_id: str, progress: Progress) -> RenderResult:
+def render(
+    work_dir: Path,
+    candidate_id: str,
+    progress: Progress,
+    *,
+    vocal_volume: float = 100,
+    backing_volume: float = 100,
+    output_dir: Path | None = None,
+) -> RenderResult:
     progress("rendering", "Aligning phrases without changing pitch and mixing your section.")
     try:
         data = json.loads((work_dir / "analysis.json").read_text(encoding="utf-8"))
@@ -158,6 +166,13 @@ def render(work_dir: Path, candidate_id: str, progress: Progress) -> RenderResul
                 raise ValueError("Saved audio sample rates differ. Analyze the files again.")
             audio.append(samples)
         phrases = [Phrase(**phrase) for phrase in match["phrases"]]
-        return mix_section(*audio, SAMPLE_RATE, phrases, work_dir)
+        return mix_section(
+            *audio,
+            SAMPLE_RATE,
+            phrases,
+            output_dir if output_dir is not None else work_dir,
+            vocal_volume=vocal_volume,
+            backing_volume=backing_volume,
+        )
     except Exception as error:
         raise RuntimeError(f"Rendering failed: {error}") from error
