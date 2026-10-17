@@ -45,6 +45,7 @@ shape Session
   error: string
 
 shape SavedCover
+  phase: string
   title: string
   id: string
   song_name: string
@@ -81,6 +82,10 @@ component ExactCover
   state youtubeUrl = "" persist
   state youtubeDirty = false persist
   state title = "" persist
+  state query = ""
+  state feedback = ""
+  state showDetails = false
+  state playerHeight = 360
   state intent = ""
   state openingCover = false
   state playerReadyKey = ""
@@ -91,6 +96,8 @@ component ExactCover
   state draftKey = ""
   state draftVocal = 100
   state draftBacking = 100
+  derive songs = library.covers.filter(c => c.title.toLowerCase().includes(query.trim().toLowerCase()) or c.vocal_name.toLowerCase().includes(query.trim().toLowerCase()))
+  derive visibleError = feedback == "" ? "" : error
   derive mixKey = `${session.job.id}:${session.job.selected_id}:${session.job.revision}`
   derive vocalVolume = draftKey == mixKey ? draftVocal : session.job.vocal_volume
   derive backingVolume = draftKey == mixKey ? draftBacking : session.job.backing_volume
@@ -116,15 +123,23 @@ component ExactCover
     if not pending(changed) and not pending(exported)
       playerReadyKey = ""
       nav = go(nav, url)
+  action search(value: string)
+    query = value
+  action clearSearch
+    query = ""
+  action toggleDetails
+    showDetails = not showDetails
   action addSong
+    feedback = ""
     intent = ""
     nav = push(nav, "/add")
   action chooseFileSource
     source = "file"
     youtubeDirty = false
   action chooseYoutubeSource
+    if source != "youtube"
+      youtubeDirty = youtubeUrl != ""
     source = "youtube"
-    youtubeDirty = youtubeUrl != ""
   action editYoutube(value: string)
     youtubeUrl = value
     youtubeDirty = true
@@ -135,6 +150,7 @@ component ExactCover
   action editTitle(value: string)
     title = value
   action afterChange
+    feedback = intent
     if error == "" and (intent == "open" or intent == "create")
       nav = intent == "create" ? replace(nav, "/cover") : push(nav, "/cover")
       if intent == "create"
@@ -147,6 +163,9 @@ component ExactCover
       source = "file"
     intent = ""
   action openSaved(id: string)
+    showDetails = false
+    feedback = ""
+    playerHeight = 360
     intent = "open"
     openingCover = true
     playerReadyKey = ""
@@ -163,6 +182,7 @@ component ExactCover
       case some(f)
         openingCover = false
         exportReady = false
+        intent = "song"
         send changed = importAudio("song", f.path, f.name, f.size)
       case none
         exportNote = ""
@@ -171,10 +191,12 @@ component ExactCover
       case some(f)
         openingCover = false
         exportReady = false
+        intent = "vocal"
         send changed = importAudio("vocal", f.path, f.name, f.size)
       case none
         exportNote = ""
   action create
+    showDetails = false
     openingCover = false
     exportNote = ""
     exportReady = false
@@ -186,6 +208,7 @@ component ExactCover
     intent = "retry"
     send changed = retryCover()
   action choose(id: string)
+    intent = "choose"
     openingCover = false
     exportNote = ""
     exportReady = false
@@ -195,6 +218,13 @@ component ExactCover
       playerReadyKey = mixKey
     else if data == `${playerKey}loading`
       playerReadyKey = ""
+    else if data.startsWith(`${playerKey}height:`)
+      match parseNumber(data.slice(playerKey.length + 7))
+        case some(value)
+          if value >= 200 and value <= 1600
+            playerHeight = value
+        case none
+          playerHeight = 360
     else if data.startsWith(`${playerKey}vocal:`)
       match parseNumber(data.slice(playerKey.length + 6))
         case some(value)
@@ -239,157 +269,215 @@ component ExactCover
       for entry in stack(nav) key=entry.id
         if entry.name == "home"
           column navigationKey=`${entry.id}` navigationScroll="library-content" navigationSplit="none" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="8px 16px"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
               text "Flowback" role="heading" aria-level=1 flex=1
               button press=addSong buttonStyle="bordered-prominent" disabled=(pending(changed) or pending(exported)) testId="add-song"
                 text "Add song"
             scroll id="library-content" flex=1 min-height=0
-              column width="100%" box-sizing="border-box" min-width=0 max-width=720 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="library"
-                column gap=8 padding-top=12
-                  text "Your songs" role="heading" aria-level=2 font-size=30 font-weight=650
-                  text "Your performances, ready when you are. Open a song to listen and adjust your mix." color="-exact-secondary-label" line-height=1.5
+              column width="100%" box-sizing="border-box" min-width=0 max-width=840 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="library"
+                column gap=6 padding-top=8
+                  text "Your songs" role="heading" aria-level=2 font-size=28 font-weight=650
+                  text `${library.covers.length} ${library.covers.length == 1 ? "song" : "songs"} · Saved on this Mac` font="-exact-subheadline" color="-exact-secondary-label"
                 if library.error != ""
-                  text library.error role="alert" color="-exact-system-red" testId="library-error"
+                  column padding=20 gap=10 border-radius=12 background-color="-exact-secondary-background" testId="library-error"
+                    text "Can’t connect to your library" font-weight=600
+                    text library.error role="alert" color="-exact-secondary-label" line-height=1.45
+                    button press=refresh buttonStyle="bordered" testId="retry-library"
+                      text "Try again"
+                else if pending(library) and library.covers.length == 0
+                  progress aria-label="Loading your songs" testId="library-loading"
                 else if library.covers.length == 0
-                  column gap=12 padding=28 border-radius=16 background-color="-exact-secondary-background" testId="library-empty"
-                    image "symbol:waveform" width=36 height=36 color="-exact-secondary-label"
-                    text "Make room for your first song" font-size=20 font-weight=600
-                    text "Add the original song and your vocal file. We’ll find your section and keep your cover here." color="-exact-secondary-label" line-height=1.5
+                  column gap=16 padding="48px 24px" align-items="center" testId="library-empty"
+                    image "symbol:waveform" width=48 height=48 color="-exact-secondary-label"
+                    text "Your first cover starts here" font-size=22 font-weight=600 text-align="center"
+                    text "Bring an original song and your vocal recording. We’ll match the section you sang." color="-exact-secondary-label" text-align="center" line-height=1.5 max-width=340
+                    button press=addSong buttonStyle="bordered-prominent" testId="add-first-song"
+                      text "Add your first song"
                 else
-                  column gap=12
-                    for cover in library.covers key=cover.id
-                      column gap=10 padding=18 border-radius=14 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId=`saved-${cover.id}`
-                        row gap=14 align-items="center"
-                          image "symbol:waveform" width=28 height=28 color="-exact-secondary-label"
-                          column flex=1 min-width=0 gap=5
-                            text cover.title font-weight=600 line-clamp=2
-                            text `${cover.status}${cover.duration > 0 ? ` · ${duration(cover.duration)}` : ""}` font="-exact-footnote" color="-exact-secondary-label"
-                        text cover.vocal_name color="-exact-secondary-label" line-clamp=1 font="-exact-footnote"
-                        row gap=12 align-items="center" flex-wrap="wrap"
-                          text cover.saved_at flex=1 font="-exact-footnote" color="-exact-secondary-label"
-                          button press=openSaved(cover.id) buttonStyle="bordered" disabled=(pending(changed) or pending(exported)) testId=`open-${cover.id}`
-                            text "Open song"
+                  column gap=16
+                    input type="search" value=query input=search placeholder="Search your songs" aria-label="Search your songs" testId="song-search"
+                    if songs.length == 0
+                      column gap=12 padding="32px 16px" align-items="center" testId="search-empty"
+                        text "No matching songs" font-weight=600
+                        text "Try another song name or vocal filename." color="-exact-secondary-label" text-align="center"
+                        button press=clearSearch buttonStyle="bordered" testId="clear-search"
+                          text "Clear search"
+                    else
+                      column border-radius=14 border-width=1 border-style="solid" border-color="-exact-separator" overflow="hidden" background-color="-exact-secondary-background"
+                        for cover in songs key=cover.id
+                          button press=openSaved(cover.id) disabled=(pending(changed) or pending(exported)) aria-label=`Open ${cover.title}` testId=`open-${cover.id}` display="flex" align-items="center" gap=14 padding="16px" width="100%" box-sizing="border-box" text-align="left" background-color="transparent" border-width=0 border-bottom-width=1 border-style="solid" border-color="-exact-separator" border-radius=0
+                            column width=42 height=42 flex-shrink=0 align-items="center" justify-content="center" border-radius=10 background-color="light-dark(#eaf0fa, #253148)"
+                              image "symbol:waveform" width=22 height=22 color="light-dark(#315e9e, #a7c8fb)"
+                            column flex=1 min-width=0 gap=5
+                              text cover.title font-weight=600 line-clamp=2
+                              row gap=8 flex-wrap="wrap" align-items="center"
+                                text cover.status font="-exact-footnote" color=(cover.phase == "failed" ? "-exact-system-red" : "-exact-secondary-label")
+                                if cover.duration > 0
+                                  text `· ${duration(cover.duration)}` font="-exact-footnote" color="-exact-secondary-label" font-variant-numeric="tabular-nums"
+                                text `· ${cover.saved_at}` font="-exact-footnote" color="-exact-secondary-label"
+                            image "symbol:forward-chevron" width=12 height=16 flex-shrink=0 color="-exact-secondary-label"
                 if pending(changed) and openingCover
-                  text "Opening song…" color="-exact-secondary-label"
-                if error != "" and not pending(changed)
-                  text error color="-exact-system-red" role="alert" testId="library-action-error"
-                text "Songs and mix levels are saved on this Mac." font="-exact-footnote" color="-exact-secondary-label"
+                  text "Opening song…" role="status" color="-exact-secondary-label"
+                if visibleError != "" and feedback == "open" and not pending(changed)
+                  text visibleError color="-exact-system-red" role="alert" testId="library-action-error"
         if entry.name == "add"
           column navigationKey=`${entry.id}` navigationScroll="add-content" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="8px 16px"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
               button id="back" press=back disabled=pending(changed) testId="add-back"
                 text "Your songs"
               text "Add song" role="heading" aria-level=2 flex=1
             scroll id="add-content" flex=1 min-height=0
-              column width="100%" box-sizing="border-box" min-width=0 max-width=720 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="add-form"
+              column width="100%" box-sizing="border-box" min-width=0 max-width=640 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="add-form"
                 column gap=8
-                  text "Bring the song. Add your voice." role="heading" aria-level=3 font-size=24 font-weight=600
-                  text "Use the original lyrics. A verse, a chorus, or the whole song is enough." color="-exact-secondary-label" line-height=1.5
+                  text "Choose the original song and your vocal recording." color="-exact-secondary-label" line-height=1.45
                 column gap=8
-                  text "Song name" font-weight=600
-                  input value=title input=editTitle placeholder="Use the original song’s name" aria-label="Song name" testId="song-title"
-                  text "Leave blank to use the imported song’s name." font="-exact-footnote" color="-exact-secondary-label"
-                row gap=16 flex-wrap="wrap" align-items="stretch"
-                  column flex="1 1 260px" min-width=0 padding=20 gap=14 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="song-card"
-                    row gap=10 align-items="center"
-                      image "symbol:waveform" width=22 height=22 color="-exact-secondary-label"
-                      text "Original song" font-weight=600
-                    column gap=5 flex=1
-                      text (draft.song_name == "" ? "Start with the full song" : draft.song_name) font-weight=500 line-clamp=2 testId="song-name"
-                      text (draft.song_name == "" ? "Include the artist’s vocals so we can find your section." : `${duration(draft.song_duration)} · ready to match`) font="-exact-footnote" color="-exact-secondary-label" line-height=1.4
-                    row gap=8 flex-wrap="wrap"
-                      button press=chooseFileSource buttonStyle=(source == "file" ? "bordered-prominent" : "bordered") disabled=pending(changed) testId="source-file"
-                        text "Audio file"
-                      button press=chooseYoutubeSource buttonStyle=(source == "youtube" ? "bordered-prominent" : "bordered") disabled=pending(changed) testId="source-youtube"
-                        text "YouTube link"
+                  row gap=8 align-items="baseline" flex-wrap="wrap"
+                    text "Song name" font-weight=600
+                    text "Optional" font="-exact-footnote" color="-exact-secondary-label"
+                  input value=title input=editTitle placeholder="Use the imported song’s name" aria-label="Song name" testId="song-title"
+                column padding=20 gap=16 border-radius=14 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="song-card"
+                  row gap=10 align-items="center" flex-wrap="wrap"
+                    text "1" font="-exact-footnote" font-weight=600 color="-exact-secondary-label"
+                    text "Original song" font-weight=600 flex=1
+                    if draft.song_id != "" and not youtubeDirty
+                      text "Added" font="-exact-footnote" color="-exact-system-green"
+                  row role="tablist" aria-label="Original song source" gap=4 padding=4 border-radius=10 background-color="light-dark(#e9e9ed, #292a2e)"
+                    button role="tab" aria-selected=(source == "file") aria-controls="original-source" press=chooseFileSource disabled=pending(changed) testId="source-file" flex=1 border-width=0 border-radius=7 padding="8px 10px" background-color=(source == "file" ? "light-dark(#ffffff, #484a50)" : "transparent") color="-exact-label"
+                      text "Audio file"
+                    button role="tab" aria-selected=(source == "youtube") aria-controls="original-source" press=chooseYoutubeSource disabled=pending(changed) testId="source-youtube" flex=1 border-width=0 border-radius=7 padding="8px 10px" background-color=(source == "youtube" ? "light-dark(#ffffff, #484a50)" : "transparent") color="-exact-label"
+                      text "YouTube link"
+                  column id="original-source" role="tabpanel" gap=12
                     if source == "file"
+                      if draft.song_id == ""
+                        text "Choose the full track, including the artist’s vocals." color="-exact-secondary-label" font="-exact-subheadline" line-height=1.4 testId="song-name"
                       button press=chooseSong buttonStyle="bordered" disabled=pending(changed) testId="choose-song"
-                        text (draft.song_name == "" ? "Choose song…" : "Change song…")
+                        text (pending(changed) and intent == "song" ? "Importing audio…" : draft.song_id == "" ? "Choose audio file…" : "Replace audio file…")
                     else
-                      column gap=10
-                        input value=youtubeUrl input=editYoutube placeholder="https://youtube.com/watch?v=…" aria-label="YouTube link" disabled=pending(changed) testId="youtube-url" min-width=0
+                      row gap=10 flex-wrap="wrap" align-items="center"
+                        input value=youtubeUrl input=editYoutube placeholder="Paste a YouTube link" aria-label="YouTube link" disabled=pending(changed) testId="youtube-url" flex="1 1 180px" min-width=0
                         button press=importYoutube buttonStyle="bordered" disabled=(youtubeUrl.trim() == "" or pending(changed)) testId="import-youtube"
-                          text (pending(changed) and intent == "youtube" ? "Importing from YouTube…" : "Import song")
-                        if error != "" and not pending(changed)
-                          text error color="-exact-system-red" role="alert" testId="youtube-error"
-                        text "A public video, up to 20 minutes. Import it before creating your cover." font="-exact-footnote" color="-exact-secondary-label" line-height=1.4
-                  column flex="1 1 260px" min-width=0 padding=20 gap=14 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="vocal-card"
-                    row gap=10 align-items="center"
-                      image "symbol:person" width=22 height=22 color="-exact-secondary-label"
-                      text "Your vocals" font-weight=600
-                    column gap=5 flex=1
-                      text (draft.vocal_name == "" ? "A verse, a chorus, or all of it" : draft.vocal_name) font-weight=500 line-clamp=2 testId="vocal-name"
-                      text (draft.vocal_name == "" ? "The same lyrics, performed by you. A clean vocal works best." : `${duration(draft.vocal_duration)} · ready to align`) font="-exact-footnote" color="-exact-secondary-label" line-height=1.4
-                    button press=chooseVocal buttonStyle="bordered" disabled=pending(changed) testId="choose-vocal"
-                      text (draft.vocal_name == "" ? "Choose vocals…" : "Change vocals…")
+                          text (pending(changed) and intent == "youtube" ? "Importing…" : "Import")
+                      text "Single public video, up to 20 minutes." font="-exact-footnote" color="-exact-secondary-label"
+                    if pending(changed) and (intent == "song" or intent == "youtube")
+                      progress aria-label="Importing original song"
+                    if draft.song_id != ""
+                      row gap=12 align-items="center"
+                        image "symbol:waveform" width=20 height=20 color="-exact-secondary-label"
+                        column flex=1 min-width=0 gap=3
+                          text draft.song_name font-weight=500 line-clamp=2 testId="imported-song-name"
+                          text `${duration(draft.song_duration)} · ${youtubeDirty ? "Import the new link to replace this track" : "Ready"}` font="-exact-footnote" color="-exact-secondary-label"
+                    if visibleError != "" and (feedback == "song" or feedback == "youtube") and not pending(changed)
+                      text visibleError color="-exact-system-red" role="alert" testId="action-error" line-height=1.4
+                column padding=20 gap=16 border-radius=14 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="vocal-card"
+                  row gap=10 align-items="center" flex-wrap="wrap"
+                    text "2" font="-exact-footnote" font-weight=600 color="-exact-secondary-label"
+                    text "Your vocals" font-weight=600 flex=1
+                    if draft.vocal_id != ""
+                      text "Added" font="-exact-footnote" color="-exact-system-green"
+                  if draft.vocal_id == ""
+                    text "A verse, a chorus, or the whole song. Use your voice on its own for the clearest result." color="-exact-secondary-label" font="-exact-subheadline" line-height=1.4 testId="vocal-name"
+                  else
+                    row gap=12 align-items="center"
+                      image "symbol:person" width=20 height=20 color="-exact-secondary-label"
+                      column flex=1 min-width=0 gap=3
+                        text draft.vocal_name font-weight=500 line-clamp=2 testId="imported-vocal-name"
+                        text `${duration(draft.vocal_duration)} · Ready` font="-exact-footnote" color="-exact-secondary-label"
+                  button press=chooseVocal buttonStyle="bordered" disabled=pending(changed) testId="choose-vocal"
+                    text (pending(changed) and intent == "vocal" ? "Importing vocals…" : draft.vocal_id == "" ? "Choose vocal file…" : "Replace vocal file…")
+                  if pending(changed) and intent == "vocal"
+                    progress aria-label="Importing vocals"
+                  if visibleError != "" and feedback == "vocal" and not pending(changed)
+                    text visibleError color="-exact-system-red" role="alert" testId="action-error" line-height=1.4
                 input type="file" id="song-file" testId="song-file" display="none" change=songPicked
                 input type="file" id="vocal-file" testId="vocal-file" display="none" change=vocalPicked
-                column gap=10
-                  row gap=12 flex-wrap="wrap" align-items="center"
-                    button press=create buttonStyle="bordered-prominent" disabled=(not canCreate) testId="create-cover"
-                      text (pending(changed) and intent == "create" ? "Adding song…" : "Add song & create cover")
-                    text (pending(changed) ? "Preparing your files…" : "Only the section you sang will be exported.") font="-exact-footnote" color="-exact-secondary-label"
+                column gap=12
+                  text "WAV, MP3, M4A or FLAC · Up to 64 MB per file" font="-exact-footnote" color="-exact-secondary-label"
                   if not session.online
-                    text "The local audio engine is unavailable. Start it, then this screen will reconnect automatically." color="-exact-secondary-label" testId="offline"
+                    text "The audio engine is disconnected. Reconnecting automatically…" color="-exact-secondary-label" testId="offline"
                   else if not session.models_available
-                    text "The audio engine needs its model dependencies installed before it can process a cover." color="-exact-secondary-label" testId="models-missing"
-                  if error != "" and not pending(changed)
-                    text error color="-exact-system-red" role="alert" testId="action-error"
+                    text "Install the audio models to create your first cover." color="-exact-secondary-label" testId="models-missing"
+                  if visibleError != "" and feedback == "create" and not pending(changed)
+                    text visibleError color="-exact-system-red" role="alert" testId="action-error"
                   if draft.error != ""
                     text draft.error color="-exact-system-red" role="alert" testId="session-error"
+                  button press=create buttonStyle="bordered-prominent" disabled=(not canCreate) testId="create-cover"
+                    text (pending(changed) and intent == "create" ? "Creating…" : "Create cover")
+                  text (draft.song_id == "" or draft.vocal_id == "" ? "Add both files to continue. Your draft is saved automatically." : youtubeDirty ? "Import your YouTube link to continue." : "We’ll match and mix only the section you sang.") font="-exact-footnote" color="-exact-secondary-label" text-align="center" line-height=1.4
         if entry.name == "cover"
           column navigationKey=`${entry.id}` navigationScroll="cover-content" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="8px 16px"
-              button press=back disabled=(pending(changed) or pending(exported)) testId="cover-back"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+              button id="back" press=back disabled=(pending(changed) or pending(exported)) testId="cover-back"
                 text "Your songs"
               text "Your cover" role="heading" aria-level=2 flex=1
             scroll id="cover-content" flex=1 min-height=0
-              column width="100%" box-sizing="border-box" min-width=0 max-width=720 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="cover-detail"
-                column gap=8
+              column width="100%" box-sizing="border-box" min-width=0 max-width=760 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="cover-detail"
+                column gap=8 padding-top=8
                   text session.title role="heading" aria-level=3 font-size=28 font-weight=650 testId="cover-title"
-                  text session.vocal_name color="-exact-secondary-label" line-clamp=2
-                if error != "" and not pending(changed)
-                  text error color="-exact-system-red" role="alert"
+                  if session.job.phase == "ready"
+                    text `${duration(session.job.duration)} cover · ${duration(session.job.start)} - ${duration(session.job.end)} in the original` color="-exact-secondary-label" font="-exact-subheadline" testId="result-range"
+                  else
+                    text "Your performance, on the original track." color="-exact-secondary-label" font="-exact-subheadline"
+                if visibleError != "" and not pending(changed)
+                  text visibleError color="-exact-system-red" role="alert"
                 if session.error != ""
                   text session.error color="-exact-system-red" role="alert"
                 if busy
-                  column padding=20 gap=10 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="processing"
+                  column padding=24 gap=20 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="processing"
+                    column gap=8
+                      text "Making your cover" font-size=20 font-weight=600
+                      text session.job.message color="-exact-secondary-label" line-height=1.4 testId="progress-message"
                     progress aria-label="Creating cover"
-                    text session.job.message font-weight=600 testId="progress-message"
-                    text "Your files stay on this Mac. The first run may download model files." font="-exact-footnote" color="-exact-secondary-label"
+                    column gap=14
+                      text "1  Separate the original backing" color=(session.job.phase == "separating" or session.job.phase == "queued" ? "-exact-label" : "-exact-secondary-label")
+                      text "2  Find the lyrics you performed" color=(session.job.phase == "transcribing" or session.job.phase == "matching" ? "-exact-label" : "-exact-secondary-label")
+                      text "3  Align your voice and mix" color=(session.job.phase == "rendering" ? "-exact-label" : "-exact-secondary-label")
+                    text "You can return to your library. Processing will continue." font="-exact-footnote" color="-exact-secondary-label"
                 if session.job.phase == "failed"
-                  column padding=20 gap=8 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="failure"
-                    text "This cover needs another try" font-weight=600
-                    text session.job.error role="alert" testId="job-error"
+                  column padding=24 gap=14 border-radius=16 background-color="-exact-secondary-background" testId="failure"
+                    text "We couldn’t finish this cover" font-size=20 font-weight=600
+                    text session.job.error role="alert" line-height=1.45 testId="job-error"
                     button press=retry buttonStyle="bordered" disabled=(pending(changed) or not session.online or not session.models_available) testId="retry-cover"
                       text "Try again"
                 if session.job.phase == "choose"
-                  column gap=14 testId="matches"
-                    text "Which section did you sing?" role="heading" aria-level=3 font-size=20 font-weight=600
-                    text "These lyrics appear in more than one place, or the match needs your confirmation." color="-exact-secondary-label"
+                  column gap=16 testId="matches"
+                    text "Choose your section" role="heading" aria-level=3 font-size=20 font-weight=600
+                    text "These lyrics repeat in the original. Choose the part you performed." color="-exact-secondary-label" line-height=1.45
                     for candidate in session.job.candidates key=candidate.id
-                      column padding=16 gap=10 border-radius=12 background-color="-exact-secondary-background"
-                        text `${duration(candidate.start)} - ${duration(candidate.end)}` font-weight=600
-                        text candidate.lyrics line-clamp=3 color="-exact-secondary-label"
+                      column padding=20 gap=14 border-radius=14 background-color="-exact-secondary-background" border-width=1 border-style="solid" border-color="-exact-separator"
+                        text `${duration(candidate.start)} - ${duration(candidate.end)}` font-weight=600 font-variant-numeric="tabular-nums"
+                        text candidate.lyrics line-clamp=4 color="-exact-secondary-label" line-height=1.5
                         button press=choose(candidate.id) disabled=pending(changed) buttonStyle="bordered" testId=`match-${candidate.id}`
                           text "Use this section"
                 if session.job.phase == "ready"
                   column padding=20 gap=16 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="result"
-                    row gap=10 align-items="center" flex-wrap="wrap"
-                      text "Your cover is ready" role="heading" aria-level=3 font-size=22 font-weight=600 flex=1
-                      text duration(session.job.duration) font-variant-numeric="tabular-nums" color="-exact-secondary-label"
-                    text `From ${duration(session.job.start)} to ${duration(session.job.end)} in the original song.` color="-exact-secondary-label" testId="result-range"
+                    iframe src=`http://127.0.0.1:8891/studio/index.html?job=${session.job.id}&revision=${session.job.revision}` message=liveMessage aria-label="Live cover mixer" width="100%" height=playerHeight border-width=0 testId="live-mixer"
                     if session.job.error != ""
                       text session.job.error color="-exact-system-red" role="alert" testId="mix-render-error"
-                    iframe src=`http://127.0.0.1:8891/studio/index.html?job=${session.job.id}&revision=${session.job.revision}` message=liveMessage aria-label="Live cover mixer" width="100%" height=280 border-width=0 testId="live-mixer"
-                    if session.job.warning != ""
-                      text session.job.warning font="-exact-footnote" color="-exact-secondary-label" testId="result-warning"
-                    button press=export buttonStyle="bordered-prominent" disabled=(playerReadyKey != mixKey or pending(changed) or pending(exported)) testId="export"
-                      text (pending(exported) ? "Preparing export…" : exportPreparedForMix ? "Save WAV…" : "Prepare WAV")
-                    if exportError != ""
-                      text exportError color="-exact-system-red" role="alert"
-                    if exportNote != ""
-                      text exportNote font="-exact-footnote" testId="export-note"
-                if session.job.id == ""
+                  row align-items="center" gap=12 flex-wrap="wrap"
+                    column flex="1 1 180px" min-width=0 gap=5
+                      text "Take your cover with you" font-weight=600
+                      text "WAV audio with your current mix levels." font="-exact-footnote" color="-exact-secondary-label"
+                    button press=export buttonStyle="bordered" disabled=(playerReadyKey != mixKey or pending(changed) or pending(exported)) testId="export"
+                      text (pending(exported) ? "Preparing…" : exportPreparedForMix ? "Save WAV…" : "Export WAV…")
+                  if exportError != ""
+                    text exportError color="-exact-system-red" role="alert"
+                  if exportNote != ""
+                    text exportNote font="-exact-footnote" testId="export-note"
+                if session.job.id != ""
+                  column gap=14 padding-top=8 border-width=0 border-top-width=1 border-style="solid" border-color="-exact-separator"
+                    button press=toggleDetails aria-expanded=showDetails testId="cover-details" display="flex" align-items="center" justify-content="space-between" gap=12 text-align="left" padding="10px 0" border-width=0 background-color="transparent" color="-exact-secondary-label"
+                      text "Recording details"
+                      image "symbol:forward-chevron" width=12 height=14 rotate=(showDetails ? "90deg" : "0deg")
+                    if showDetails
+                      column gap=12 testId="recording-details"
+                        column gap=4
+                          text "Original song" font="-exact-footnote" font-weight=600 color="-exact-secondary-label"
+                          text session.song_name line-clamp=3
+                        column gap=4
+                          text "Your vocals" font="-exact-footnote" font-weight=600 color="-exact-secondary-label"
+                          text session.vocal_name line-clamp=3
+                        if session.job.warning != ""
+                          text session.job.warning font="-exact-footnote" color="-exact-secondary-label" line-height=1.5 testId="result-warning"
+                else
                   text "Open a song from your library to listen to your cover." color="-exact-secondary-label"
                 input id="export-file" display="none" change=saved cancel=saveCancelled

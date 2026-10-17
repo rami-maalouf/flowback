@@ -43,3 +43,11 @@ test('gain protection preserves balance and exact mute at boosted levels', () =>
   expect(voice * .8 + backing * .6).toBeCloseTo(.98);
   expect(gains(0, 0, .8, .6)).toEqual([0, 0]);
 });
+
+test('waveform follows the supplied audio and keeps silent sections silent', async () => {
+  const { waveform } = await import('../cover_engine/studio/waveform.js');
+  const audio = samples => ({numberOfChannels: 1, getChannelData: () => new Float32Array(samples)});
+  const shape = waveform(audio([0, 0, .5, .5]), audio([0, 0, 0, 0]), 2);
+  expect(shape).toEqual([0, 1]);
+  expect(waveform(audio([0, 0]), audio([0, 0]), 2)).toEqual([0, 0]);
+});

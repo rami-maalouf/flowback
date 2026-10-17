@@ -678,7 +678,14 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
 
     @app.get("/studio/{name}")
     async def studio(name: str):
-        if name not in {"index.html", "player.js", "player.css", "mixer.js", "autosave.js"}:
+        if name not in {
+            "index.html",
+            "player.js",
+            "player.css",
+            "mixer.js",
+            "autosave.js",
+            "waveform.js",
+        }:
             raise HTTPException(404, "Page not found.")
         return FileResponse(STUDIO / name)
 

@@ -1,5 +1,6 @@
 import { Mixer } from './mixer.js';
 import { Autosave, restoredLevels } from './autosave.js';
+import { waveform } from './waveform.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -22,18 +23,21 @@ const saver = new Autosave(async (payload, keepalive) => {
 }, {
   pending(payload) {
     try { localStorage.setItem(key, JSON.stringify({...payload, pending: true})); } catch {}
-    $('status').textContent = 'Saving levels…';
+    $('status').textContent = 'Saving mix…';
+    document.body.dataset.save = 'saving';
     $('retry-save').hidden = true;
     notify('saving');
   },
   saved() {
     try { localStorage.removeItem(key); } catch {}
-    $('status').textContent = 'Levels saved on this Mac. Adjust while listening.';
+    $('status').textContent = 'Mix saved on this Mac';
+    document.body.dataset.save = 'saved';
     $('retry-save').hidden = true;
     notify('saved');
   },
   error() {
-    $('status').textContent = 'Levels not saved to this Mac yet.';
+    $('status').textContent = 'Mix not saved. Please retry.';
+    document.body.dataset.save = 'error';
     $('retry-save').hidden = false;
     notify('save-error');
   },
@@ -62,6 +66,7 @@ function updateLevels(save = true) {
 }
 function compare(value) {
   original = value;
+  $('mix-hint').textContent = value ? 'Listening to original' : 'Adjust while listening';
   $('cover').setAttribute('aria-pressed', String(!value));
   $('original').setAttribute('aria-pressed', String(value));
   updateLevels(false);
@@ -69,18 +74,21 @@ function compare(value) {
 function tick() {
   if (!mixer || disposed) return;
   if (mixer.playing && mixer.position >= mixer.duration) mixer.pause();
-  $('play').textContent = mixer.playing ? 'Pause' : 'Play';
+  $('play').dataset.playing = String(mixer.playing);
+  $('played-width').setAttribute('width', String(600 * mixer.position / mixer.duration));
   $('play').setAttribute('aria-label', mixer.playing ? 'Pause' : 'Play');
   $('seek').value = mixer.position;
   $('elapsed').textContent = time(mixer.position);
   frame = requestAnimationFrame(tick);
 }
 function error(error) {
+  document.body.dataset.save = 'error';
   $('status').textContent = error.message || 'Playback failed. Try again.';
 }
 async function load() {
   $('retry').hidden = true;
-  $('status').textContent = 'Loading aligned tracks…';
+  $('status').textContent = 'Loading audio…';
+  document.body.dataset.save = 'loading';
   notify('loading');
   let context;
   try {
@@ -90,6 +98,15 @@ async function load() {
     const buffers = await Promise.all([data.vocal_url, data.backing_url, data.original_url].map(async url =>
       context.decodeAudioData(await (await request(url)).arrayBuffer())));
     if (disposed) { await context.close(); return; }
+    const bars = waveform(buffers[0], buffers[1]);
+    for (const id of ['wave-bars', 'played-bars']) {
+      $(id).replaceChildren(...bars.map((amplitude, index) => {
+        const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        const height = Math.max(2, amplitude * 48);
+        for (const [name, value] of Object.entries({x: index * 5, y: (56 - height) / 2, width: 3, height, rx: 1.5})) bar.setAttribute(name, String(value));
+        return bar;
+      }));
+    }
     mixer = new Mixer(context, buffers, [data.vocal_peak, data.backing_peak]);
     let cached = null;
     try { cached = JSON.parse(localStorage.getItem(key)); } catch {}
@@ -100,7 +117,8 @@ async function load() {
     $('seek').max = mixer.duration;
     $('duration').textContent = time(mixer.duration);
     document.querySelectorAll('input, button').forEach(node => { node.disabled = false; });
-    $('status').textContent = 'Levels saved on this Mac. Adjust while listening.';
+    $('status').textContent = 'Mix saved on this Mac';
+    document.body.dataset.save = 'saved';
     if (restored.save) saver.set(...restored.values);
     notify('ready');
     tick();
@@ -121,9 +139,12 @@ $('retry-save').addEventListener('click', () => saver.flush());
 addEventListener('online', () => saver.flush());
 addEventListener('pagehide', () => {
   disposed = true;
+  resize.disconnect();
   saver.close();
   abort.abort();
   cancelAnimationFrame(frame);
   mixer?.close();
 });
+const resize = new ResizeObserver(() => notify(`height:${Math.ceil(document.querySelector('main').getBoundingClientRect().height + 8)}`));
+resize.observe(document.querySelector('main'));
 load();

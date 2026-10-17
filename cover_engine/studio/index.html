@@ -8,26 +8,42 @@
 </head>
 <body>
   <main aria-label="Live cover mixer">
-    <div class="comparison" role="group" aria-label="Compare recordings">
-      <button id="cover" aria-pressed="true" disabled>Your cover</button>
-      <button id="original" aria-pressed="false" disabled>Original section</button>
+    <div class="player-heading">
+      <h2>Listen & mix</h2>
+      <div class="comparison" role="group" aria-label="Compare recordings">
+        <button id="cover" aria-pressed="true" disabled>Your mix</button>
+        <button id="original" aria-pressed="false" disabled>Original</button>
+      </div>
     </div>
     <div class="transport">
-      <button id="play" disabled aria-label="Play">Play</button>
+      <button id="play" disabled aria-label="Play" data-playing="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="play-icon" d="M8 5v14l11-7z"/><path class="pause-icon" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+      </button>
       <div class="timeline">
-        <input id="seek" aria-label="Playback position" type="range" min="0" max="1" step=".01" value="0" disabled>
+        <div class="waveform">
+          <svg id="waveform" viewBox="0 0 600 56" preserveAspectRatio="none" aria-hidden="true">
+            <defs><clipPath id="played"><rect id="played-width" width="0" height="56"/></clipPath></defs>
+            <g id="wave-bars"></g><g id="played-bars" clip-path="url(#played)"></g>
+          </svg>
+          <input id="seek" aria-label="Playback position" type="range" min="0" max="1" step=".01" value="0" disabled>
+        </div>
         <div class="times"><span id="elapsed">0:00</span><span id="duration">0:00</span></div>
       </div>
     </div>
-    <div class="level">
-      <label for="vocal">Your vocals</label><output id="vocal-value" for="vocal">100%</output>
-      <input id="vocal" aria-label="Your vocals volume" type="range" min="0" max="200" step="1" value="100" disabled>
+    <div class="mix-heading"><h3>Mix levels</h3><span id="mix-hint">Adjust while listening</span></div>
+    <div class="levels">
+      <div class="level">
+        <div class="level-heading"><label for="vocal">Your vocals</label><output id="vocal-value" for="vocal">100%</output></div>
+        <input id="vocal" aria-label="Your vocals volume" type="range" min="0" max="200" step="1" value="100" disabled>
+        <div class="scale" aria-hidden="true"><span>0%</span><span>100%</span><span>200%</span></div>
+      </div>
+      <div class="level">
+        <div class="level-heading"><label for="backing">Backing track</label><output id="backing-value" for="backing">100%</output></div>
+        <input id="backing" aria-label="Backing track volume" type="range" min="0" max="200" step="1" value="100" disabled>
+        <div class="scale" aria-hidden="true"><span>0%</span><span>100%</span><span>200%</span></div>
+      </div>
     </div>
-    <div class="level">
-      <label for="backing">Backing track</label><output id="backing-value" for="backing">100%</output>
-      <input id="backing" aria-label="Backing track volume" type="range" min="0" max="200" step="1" value="100" disabled>
-    </div>
-    <div class="footer"><p id="status" role="status">Loading aligned tracks…</p><button id="retry" hidden>Retry</button><button id="retry-save" hidden>Retry save</button></div>
+    <div class="footer"><span class="save-dot" aria-hidden="true"></span><p id="status" role="status">Loading audio…</p><button id="retry" hidden>Retry</button><button id="retry-save" hidden>Retry save</button></div>
   </main>
   <script type="module" src="player.js"></script>
 </body>

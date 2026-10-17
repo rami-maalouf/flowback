@@ -57,6 +57,12 @@ async function attempt(run: () => Promise<void>): Promise<Result<'createCover'>>
   catch (error) { return { ok: false, error: message(error) }; }
 }
 
+function displayTitle(title: string, file: string) {
+  if (title && title !== file) return title;
+  return (file || 'Untitled song').replace(/\.(wav|mp3|m4a|flac|ogg|aac|aiff|webm)$/i, '')
+    .split(/[-_ ]+/).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+
 const sources: Sources = {
   loadDraft: async (_args, _store, storage) => {
     const { title: ignoredTitle, job_id: ignoredJob, ...files } = empty;
@@ -75,9 +81,9 @@ const sources: Sources = {
         id: string; title: string; song_name: string; vocal_name: string; created_at: number;
         phase: string; duration: number; start: number; end: number;
       }) => ({
-        id: cover.id, title: cover.title || cover.song_name, song_name: cover.song_name, vocal_name: cover.vocal_name,
+        phase: cover.phase, id: cover.id, title: displayTitle(cover.title, cover.song_name), song_name: cover.song_name, vocal_name: cover.vocal_name,
         saved_at: new Date(cover.created_at * 1000).toLocaleString(undefined,
-          {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}),
+          {month: 'short', day: 'numeric'}),
         status: labels[cover.phase] || 'Processing',
         duration: cover.duration, start: cover.start, end: cover.end,
       })) };
@@ -97,7 +103,7 @@ const sources: Sources = {
       return { ...defaults, job: emptyJob, online: false, models_available: false, error: message(error) };
     }
     const { job_id, ...files } = saved;
-    const result: Result<'loadSession'> = { ...files, job: emptyJob, online: false, models_available: false, error: '' };
+    const result: Result<'loadSession'> = { ...files, title: displayTitle(files.title, files.song_name), job: emptyJob, online: false, models_available: false, error: '' };
     try {
       const health = await (await request('/health')).json();
       result.online = health.ok === true;
