@@ -573,3 +573,27 @@ def test_failed_remix_publication_keeps_previous_revision(tmp_path, monkeypatch)
         assert client.get(f"/jobs/{job_id}/mix.wav").content == wav_bytes()
     with client_for(tmp_path, FakeEngine()) as client:
         assert client.get(f"/jobs/{job_id}").json() == after
+
+
+def test_song_title_and_original_metadata_survive_restart(tmp_path):
+    with client_for(tmp_path, FakeEngine()) as client:
+        song, vocal = upload(client, "original.wav"), upload(client, "performance.wav")
+        response = client.post(
+            "/jobs",
+            json={"song_id": song["id"], "vocal_id": vocal["id"], "title": "  Dots & Lines  "},
+        )
+        job_id = response.json()["id"]
+        await_phase(client, job_id, "ready")
+    with client_for(tmp_path, FakeEngine()) as client:
+        cover = client.get("/jobs").json()["covers"][0]
+        assert cover["title"] == "Dots & Lines"
+        assert cover["song_name"] == "original.wav"
+        session = client.get(f"/jobs/{job_id}/session").json()
+        assert session["title"] == "Dots & Lines"
+        assert session["vocal_name"] == "performance.wav"
+        assert (
+            client.post(
+                "/jobs", json={"song_id": song["id"], "vocal_id": vocal["id"], "title": "x" * 161}
+            ).status_code
+            == 422
+        )

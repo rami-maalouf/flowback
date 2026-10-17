@@ -5,32 +5,35 @@ export const grants = 'net.fetch http://127.0.0.1:8891\nfs.read app:/tmp/picked\
 
 const origin = 'http://127.0.0.1:8891';
 const sessionPath = 'app:/data/session.json';
+const draftPath = 'app:/data/draft.json';
 const emptyJob: Result<'loadSession'>['job'] = {
   id: '', phase: 'idle', message: '', error: '', candidates: [], selected_id: '',
   start: 0, end: 0, duration: 0, warning: '', vocal_volume: 100, backing_volume: 100, revision: 0,
 };
 type Saved = {
+  title: string;
   song_id: string; song_name: string; song_duration: number;
   vocal_id: string; vocal_name: string; vocal_duration: number; job_id: string;
 };
 const empty: Saved = {
+  title: '',
   song_id: '', song_name: '', song_duration: 0,
   vocal_id: '', vocal_name: '', vocal_duration: 0, job_id: '',
 };
 const ok = { ok: true, error: '' };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-async function read(storage: Storage): Promise<Saved> {
+async function read(storage: Storage, path = sessionPath): Promise<Saved> {
   try {
-    return { ...empty, ...JSON.parse(new TextDecoder().decode(await storage.fs.readFile(sessionPath))) };
+    return { ...empty, ...JSON.parse(new TextDecoder().decode(await storage.fs.readFile(path))) };
   } catch (error) {
     if ((error as { code?: string }).code === 'ENOENT') return { ...empty };
     throw error;
   }
 }
 
-async function save(storage: Storage, session: Saved) {
-  await storage.fs.atomicWriteFile(sessionPath, new TextEncoder().encode(JSON.stringify(session)));
+async function save(storage: Storage, session: Saved, path = sessionPath) {
+  await storage.fs.atomicWriteFile(path, new TextEncoder().encode(JSON.stringify(session)));
 }
 
 async function request(path: string, options?: RequestInit) {
@@ -55,6 +58,13 @@ async function attempt(run: () => Promise<void>): Promise<Result<'createCover'>>
 }
 
 const sources: Sources = {
+  loadDraft: async (_args, _store, storage) => {
+    const { title: ignoredTitle, job_id: ignoredJob, ...files } = empty;
+    try {
+      const { title, job_id, ...draft } = await read(storage, draftPath);
+      return { ...draft, error: '' };
+    } catch (error) { return { ...files, error: message(error) }; }
+  },
   loadLibrary: async (): Promise<Result<'loadLibrary'>> => {
     try {
       const { covers } = await (await request('/jobs')).json();
@@ -62,10 +72,10 @@ const sources: Sources = {
         ready: 'Ready to play', choose: 'Choose a section', failed: 'Needs attention',
       };
       return { error: '', covers: covers.map((cover: {
-        id: string; song_name: string; vocal_name: string; created_at: number;
+        id: string; title: string; song_name: string; vocal_name: string; created_at: number;
         phase: string; duration: number; start: number; end: number;
       }) => ({
-        id: cover.id, song_name: cover.song_name, vocal_name: cover.vocal_name,
+        id: cover.id, title: cover.title || cover.song_name, song_name: cover.song_name, vocal_name: cover.vocal_name,
         saved_at: new Date(cover.created_at * 1000).toLocaleString(undefined,
           {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}),
         status: labels[cover.phase] || 'Processing',
@@ -77,7 +87,7 @@ const sources: Sources = {
   },
   openCover: ([jobId], _store, storage) => attempt(async () => {
     const { job: ignored, ...session } = await (await request(`/jobs/${encodeURIComponent(jobId)}/session`)).json();
-    await save(storage, session);
+    await save(storage, { ...empty, ...session, title: session.title || session.song_name });
   }),
   loadSession: async (_args, _store, storage): Promise<Result<'loadSession'>> => {
     const { job_id: ignored, ...defaults } = empty;
@@ -104,16 +114,19 @@ const sources: Sources = {
     if (role !== 'song' && role !== 'vocal') throw new Error('Choose a song or vocal file.');
     const options = { method: 'POST', headers: { 'X-File-Name': encodeURIComponent(name) }, exactBodyFrom: path };
     const uploaded = await (await request('/uploads', options)).json();
-    const session = await read(storage);
+    const session = await read(storage, draftPath);
     const next = role === 'song'
       ? { ...session, song_id: uploaded.id, song_name: uploaded.name, song_duration: uploaded.duration }
       : { ...session, vocal_id: uploaded.id, vocal_name: uploaded.name, vocal_duration: uploaded.duration };
-    await save(storage, { ...next, job_id: '' });
+    await save(storage, { ...next, job_id: '' }, draftPath);
   }),
-  createCover: (_args, _store, storage) => attempt(async () => {
-    const session = await read(storage);
-    const job = await (await request('/jobs', post({ song_id: session.song_id, vocal_id: session.vocal_id }))).json();
-    await save(storage, { ...session, job_id: job.id });
+  createCover: ([title], _store, storage) => attempt(async () => {
+    const session = await read(storage, draftPath);
+    const name = title.trim() || session.song_name;
+    if (name.length > 160) throw new Error('Keep the song name within 160 characters.');
+    const job = await (await request('/jobs', post({ song_id: session.song_id, vocal_id: session.vocal_id, title: name }))).json();
+    await save(storage, { ...session, title: name, job_id: job.id });
+    await save(storage, empty, draftPath);
   }),
   chooseMatch: ([candidate_id], _store, storage) => attempt(async () => {
     const session = await read(storage);

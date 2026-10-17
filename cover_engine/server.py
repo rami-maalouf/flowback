@@ -38,6 +38,7 @@ class JobInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     song_id: str = Field(min_length=1, max_length=64)
     vocal_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(default="", max_length=160)
 
 
 class ChoiceInput(BaseModel):
@@ -213,7 +214,7 @@ class JobStore:
                         role + "_duration": upload.get("duration", 0),
                     }
                 )
-            return {**session, "job": snapshot}
+            return {**session, "title": job.get("title") or session["song_name"], "job": snapshot}
 
     def library(self):
         with self.lock:
@@ -226,6 +227,7 @@ class JobStore:
                 covers.append(
                     {
                         "id": job_id,
+                        "title": session["title"],
                         "song_name": session["song_name"],
                         "vocal_name": session["vocal_name"],
                         "created_at": job["created_at"],
@@ -237,7 +239,7 @@ class JobStore:
                 )
             return {"covers": covers}
 
-    def create(self, song_id, vocal_id):
+    def create(self, song_id, vocal_id, title=""):
         with self.lock:
             if song_id not in self.uploads or vocal_id not in self.uploads:
                 raise HTTPException(404, "An uploaded audio file was not found. Import it again.")
@@ -249,6 +251,7 @@ class JobStore:
                 "vocal_id": vocal_id,
                 "snapshot": snapshot,
                 "created_at": time.time(),
+                "title": title.strip(),
             }
             self._save(job_id)
             self.pending.put((job_id, None))
@@ -596,7 +599,7 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
 
     @app.post("/jobs", status_code=202)
     async def create_job(body: JobInput):
-        return app.state.store.create(body.song_id, body.vocal_id)
+        return app.state.store.create(body.song_id, body.vocal_id, body.title)
 
     @app.get("/jobs")
     async def saved_covers():
