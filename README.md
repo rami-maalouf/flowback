@@ -19,6 +19,10 @@ The web app is served at `http://127.0.0.1:8893`. Keep the launcher terminal ope
 
 Import WAV, MP3, M4A, or FLAC files up to 64 MiB each. Provide the full original song, including its artist's vocals, and a clear recording of your own performance. Choose **Create cover**. If the words match multiple sections, select the intended section. Preview your cover or the corresponding original section, then choose **Prepare WAV**, followed by **Save WAV**. Output downloads use chunks, so uncompressed exports can exceed the upload limit.
 
+Use **Your vocals** and **Backing track** to set each volume from 0% to 200%, then choose **Update mix**. At 100%, the track uses the automatic balance; 0% mutes it. The updated levels apply to both playback and the exported WAV, and are saved with that cover. Updating the mix reuses the existing analysis. Apply pending level changes before exporting. Peak protection may reduce the overall output at high levels while preserving the requested balance.
+
+If a mix update fails or the engine stops during it, the previous completed mix remains available. Each completed version keeps its own export files so a new render cannot overwrite a download already in progress.
+
 Your audio stays on this Mac. The first processing job downloads pretrained model weights from their upstream hosts. Imports, intermediate audio, analysis, and finished exports persist under `~/.local/share/exact-cover`; model weights persist under `~/.cache/exact-cover/models`. Source files are never modified. There is no automatic cleanup yet.
 
 ## Architecture
@@ -62,8 +66,8 @@ bun exact.mjs test macos
 
 Set `CHROME` to an installed Chromium executable if Exact cannot find Chrome. Tests use isolated temporary data. The HTTP tests inject an engine and do not measure model accuracy. The audio tests measure pitch retention, section boundaries, repeated-section selection, and preservation of input files.
 
-Word timestamps from transcription are estimates, particularly on fast rap or sustained singing. Matching requires at least three distinct words and substantial lyrical overlap. Repeated lyrics may need your choice. Phrase stretching outside a 0.5-2 speed ratio is refused. Separation can leave traces of the original singer. The initial mix balances vocal and backing levels; it does not provide mastering, pitch correction, or manual timing editing.
+Word timestamps from transcription are estimates, particularly on fast rap or sustained singing. Matching requires at least three distinct words and substantial lyrical overlap. Repeated lyrics may need your choice. Alignment preserves continuous vocal audio between phrases, including breaths and unrecognized sounds, with short opening and closing handles. Audio outside those outer handles is omitted from the section. Phrase stretching outside a 0.5-2 speed ratio is refused. Separation can leave traces of the original singer, and timing adjustments can still introduce artifacts. The mix does not provide mastering, pitch correction, or manual timing editing.
 
-A successful synthetic integration run does not establish musical quality. Validation with the user's real song and vocal recording, including listening, is still required.
+A successful synthetic integration run does not establish musical quality. Listening with real song and vocal recordings remains necessary to judge each cover.
 
 The real separator and transcription models were exercised with synthetic speech over a backing track, including a partial performance and repeated sections. Both Mac and web import, processing, preview controls, and WAV export were exercised. Layout checks cover narrow and desktop sizes, light/dark appearance, and large text. These checks establish the file-processing workflow, not production readiness or musical accuracy.

@@ -7,7 +7,7 @@ const origin = 'http://127.0.0.1:8891';
 const sessionPath = 'app:/data/session.json';
 const emptyJob: Result<'loadSession'>['job'] = {
   id: '', phase: 'idle', message: '', error: '', candidates: [], selected_id: '',
-  start: 0, end: 0, duration: 0, warning: '',
+  start: 0, end: 0, duration: 0, warning: '', vocal_volume: 100, backing_volume: 100, revision: 0,
 };
 type Saved = {
   song_id: string; song_name: string; song_duration: number;
@@ -34,7 +34,9 @@ async function save(storage: Storage, session: Saved) {
 }
 
 async function request(path: string, options?: RequestInit) {
-  const response = await fetch(`${origin}${path}`, options);
+  let response: Response;
+  try { response = await fetch(`${origin}${path}`, options); }
+  catch { throw new Error('Could not reach the local audio engine. Check that it is running, then try again.'); }
   if (!response.ok) {
     let detail = `The audio engine returned an error (${response.status}).`;
     try { detail = String((await response.json()).detail || detail); } catch {}
@@ -93,14 +95,26 @@ const sources: Sources = {
     const session = await read(storage);
     await request(`/jobs/${encodeURIComponent(session.job_id)}/choose`, post({ candidate_id }));
   }),
-  prepareExport: (_args, _store, storage) => attempt(async () => {
+  setMix: ([vocal_volume, backing_volume], _store, storage) => attempt(async () => {
     const session = await read(storage);
+    await request(`/jobs/${encodeURIComponent(session.job_id)}/mix`, post({ vocal_volume, backing_volume }));
+  }),
+  prepareExport: ([jobId, revision], _store, storage) => attempt(async () => {
+    const session = await read(storage);
+    if (session.job_id !== jobId) throw new Error('The cover changed. Prepare the current mix again.');
+    const checkMix = async () => {
+      const job = await (await request(`/jobs/${encodeURIComponent(jobId)}`)).json();
+      if (job.phase !== 'ready' || job.revision !== revision) {
+        throw new Error('The mix changed. Wait for it to finish, then prepare the WAV again.');
+      }
+    };
+    await checkMix();
     await storage.fs.mkdir('app:/tmp/output');
     const path = 'app:/tmp/output/cover.wav';
     let offset = 0;
     let total = 0;
     do {
-      const response = await request(`/jobs/${encodeURIComponent(session.job_id)}/mix.wav`, {
+      const response = await request(`/jobs/${encodeURIComponent(jobId)}/mix.wav?revision=${revision}`, {
         headers: { Range: `bytes=${offset}-${offset + 256 * 1024 - 1}` },
       });
       const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
@@ -118,6 +132,7 @@ const sources: Sources = {
       offset += bytes.length;
       total = Number(range[3]);
     } while (offset < total);
+    await checkMix();
   }),
 };
 
