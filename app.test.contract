@@ -1,7 +1,15 @@
-test "the greeting loads"
-  expect tree has "root"
-  expect text "greeting" == "Hello from Exact Cover."
+test "file import is the primary workflow"
+  size 900x760
+  clock data
+  expect tree has "song-card"
+  expect tree has "vocal-card"
+  expect text "song-name" == "Start with the full song"
+  expect text "vocal-name" == "A verse, a chorus, or all of it"
+  expect tree missing "result"
 
-test "the header's button likes it"
-  tap "like"
-  expect state liked == true
+test "the import screen fits a phone"
+  size 390x844
+  clock data
+  expect tree has "choose-song"
+  expect tree has "choose-vocal"
+  expect tree has "create-cover"

@@ -1,7 +1,5 @@
-"""shared data at the audio engine boundary."""
-
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 Progress = Callable[[str, str], None]
 

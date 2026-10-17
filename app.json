@@ -2,11 +2,11 @@
   "$schema": "../exact2/scripts/app.schema.json",
   "name": "Exact Cover",
   "short_name": "Exact Cover",
-  "id": "com.example.exact-cover-d9cc69",
+  "id": "com.rami.exact-cover",
   "start_url": "/",
   "display": "standalone",
   "app": {
-    "id": "com.example.exact-cover-d9cc69",
+    "id": "com.rami.exact-cover",
     "name": "Exact Cover"
   },
   "host": {
@@ -21,7 +21,9 @@
       "minimumOS": "14.0",
       "window": {
         "width": 900,
-        "height": 700
+        "height": 780,
+        "minWidth": 380,
+        "minHeight": 600
       }
     },
     "web": {}

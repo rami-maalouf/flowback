@@ -1,0 +1,473 @@
+import asyncio
+import importlib
+import importlib.util
+import json
+import logging
+import math
+import os
+import queue
+import re
+import shutil
+import subprocess
+import threading
+from contextlib import asynccontextmanager
+from copy import deepcopy
+from dataclasses import asdict
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+ACTIVE_PHASES = {"queued", "separating", "transcribing", "matching", "rendering"}
+PROGRESS_PHASES = {"separating", "transcribing", "matching", "rendering"}
+AUDIO_FORMATS = "wav,mp3,flac,ogg,mov,matroska,webm,aac,aiff,asf,ape,wv"
+LOGGER = logging.getLogger(__name__)
+
+
+class JobInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    song_id: str = Field(min_length=1, max_length=64)
+    vocal_id: str = Field(min_length=1, max_length=64)
+
+
+class ChoiceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    candidate_id: str = Field(min_length=1, max_length=256)
+
+
+def _write_json(path: Path, value):
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w") as file:
+        json.dump(value, file, allow_nan=False)
+        file.flush()
+        os.fsync(file.fileno())
+    temporary.replace(path)
+
+
+def _snapshot(job_id):
+    return {
+        "id": job_id,
+        "phase": "queued",
+        "message": "Waiting to analyze your performance",
+        "error": "",
+        "candidates": [],
+        "selected_id": "",
+        "start": 0,
+        "end": 0,
+        "duration": 0,
+        "warning": "",
+    }
+
+
+class JobStore:
+    def __init__(self, root: Path, engine):
+        self.root = root
+        self.engine = engine
+        self.lock = threading.RLock()
+        self.pending = queue.Queue()
+        self.stopping = threading.Event()
+        self.uploads = {}
+        self.jobs = {}
+        (root / "uploads").mkdir(parents=True, exist_ok=True)
+        (root / "jobs").mkdir(parents=True, exist_ok=True)
+        self._reload()
+        self.worker = threading.Thread(target=self._work, name="cover-engine", daemon=True)
+
+    def _reload(self):
+        for path in (self.root / "uploads").glob("*.json"):
+            try:
+                value = json.loads(path.read_text())
+                if not re.fullmatch(r"[a-f0-9]{32}", path.stem) or value["id"] != path.stem:
+                    continue
+                if path.with_suffix(".audio").is_file():
+                    self.uploads[path.stem] = value
+            except (ValueError, KeyError, OSError):
+                LOGGER.warning("could not restore upload metadata: %s", path)
+        for path in (self.root / "jobs").glob("*/job.json"):
+            try:
+                value = json.loads(path.read_text())
+                job_id = path.parent.name
+                snapshot = value["snapshot"]
+                if not re.fullmatch(r"[a-f0-9]{32}", job_id) or snapshot["id"] != job_id:
+                    continue
+                if set(snapshot) != set(_snapshot(job_id)):
+                    continue
+                self.jobs[job_id] = value
+                if snapshot["phase"] in ACTIVE_PHASES:
+                    snapshot.update(
+                        phase="failed",
+                        message="Processing was interrupted",
+                        error="The service stopped during processing. Create the cover again to retry.",
+                    )
+                    self._save(job_id)
+                elif snapshot["phase"] == "ready" and not all(
+                    (self.work_dir(job_id) / name).is_file() for name in ("mix.wav", "original.wav")
+                ):
+                    snapshot.update(
+                        phase="failed",
+                        message="Export files are missing",
+                        error="The saved audio is missing. Create the cover again to retry.",
+                    )
+                    self._save(job_id)
+            except (ValueError, KeyError, OSError, TypeError):
+                LOGGER.warning("could not restore job: %s", path)
+
+    def _save(self, job_id):
+        _write_json(self.root / "jobs" / job_id / "job.json", self.jobs[job_id])
+
+    def work_dir(self, job_id):
+        return self.root / "jobs" / job_id / "work"
+
+    def get(self, job_id):
+        with self.lock:
+            if job_id not in self.jobs:
+                raise HTTPException(404, "This cover was not found.")
+            return deepcopy(self.jobs[job_id]["snapshot"])
+
+    def create(self, song_id, vocal_id):
+        with self.lock:
+            if song_id not in self.uploads or vocal_id not in self.uploads:
+                raise HTTPException(404, "An uploaded audio file was not found. Import it again.")
+            job_id = uuid4().hex
+            self.work_dir(job_id).mkdir(parents=True)
+            snapshot = _snapshot(job_id)
+            self.jobs[job_id] = {"song_id": song_id, "vocal_id": vocal_id, "snapshot": snapshot}
+            self._save(job_id)
+            self.pending.put((job_id, None))
+            return deepcopy(snapshot)
+
+    def choose(self, job_id, candidate_id):
+        with self.lock:
+            snapshot = self.get(job_id)
+            if snapshot["phase"] not in {"choose", "ready"}:
+                raise HTTPException(409, "Wait until this cover is ready for a section choice.")
+            if not any(candidate["id"] == candidate_id for candidate in snapshot["candidates"]):
+                raise HTTPException(422, "Choose one of this cover's suggested sections.")
+            snapshot.update(
+                phase="queued",
+                message="Waiting to render your chosen section",
+                selected_id=candidate_id,
+                error="",
+                start=0,
+                end=0,
+                duration=0,
+                warning="",
+            )
+            self.jobs[job_id]["snapshot"] = snapshot
+            self._save(job_id)
+            self.pending.put((job_id, candidate_id))
+            return deepcopy(snapshot)
+
+    def update(self, job_id, **changes):
+        with self.lock:
+            if not self.stopping.is_set():
+                self.jobs[job_id]["snapshot"].update(changes)
+                self._save(job_id)
+
+    def _work(self):
+        while not self.stopping.is_set():
+            item = self.pending.get()
+            if item is None or self.stopping.is_set():
+                return
+            job_id, candidate_id = item
+            try:
+                engine = self.engine or importlib.import_module("cover_engine.pipeline")
+
+                def progress(phase, message, current_job=job_id):
+                    if phase in PROGRESS_PHASES:
+                        self.update(current_job, phase=phase, message=message)
+
+                if candidate_id is None:
+                    self.update(job_id, phase="separating", message="Preparing the original song")
+                    job = self.jobs[job_id]
+                    candidates = engine.analyze(
+                        self.root / "uploads" / f"{job['song_id']}.audio",
+                        self.root / "uploads" / f"{job['vocal_id']}.audio",
+                        self.work_dir(job_id),
+                        progress,
+                    )
+                    if self.stopping.is_set():
+                        continue
+                    if not candidates:
+                        raise ValueError(
+                            "No reliable lyrical match was found. Try a clearer or longer performance."
+                        )
+                    candidates = sorted(
+                        candidates, key=lambda candidate: candidate.score, reverse=True
+                    )
+                    self.update(job_id, candidates=[asdict(candidate) for candidate in candidates])
+                    best = candidates[0]
+                    gap = best.score - candidates[1].score if len(candidates) > 1 else math.inf
+                    if best.coverage < 0.75 or gap < 0.12 - 1e-9:
+                        self.update(
+                            job_id,
+                            phase="choose",
+                            message="Choose the section that matches your performance",
+                        )
+                        continue
+                    candidate_id = best.id
+                if self.stopping.is_set():
+                    continue
+                self.update(
+                    job_id,
+                    phase="rendering",
+                    selected_id=candidate_id,
+                    message="Aligning and mixing your performance",
+                )
+                result = engine.render(self.work_dir(job_id), candidate_id, progress)
+                if not all(
+                    (self.work_dir(job_id) / name).is_file() for name in ("mix.wav", "original.wav")
+                ):
+                    raise ValueError(
+                        "The audio engine did not produce both exports. Try creating the cover again."
+                    )
+                self.update(job_id, phase="ready", message="Your cover is ready", **asdict(result))
+            except Exception as error:
+                LOGGER.exception("cover processing failed for %s", job_id)
+                try:
+                    self.update(
+                        job_id,
+                        phase="failed",
+                        message="Could not finish this cover",
+                        error=str(error)
+                        or "The audio engine failed. Try creating the cover again.",
+                    )
+                except Exception:
+                    LOGGER.exception("could not persist failed status for %s", job_id)
+
+    def close(self):
+        with self.lock:
+            self.stopping.set()
+        self.pending.put(None)
+        self.worker.join(timeout=1)
+
+
+def _validate_audio(path: Path):
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        raise HTTPException(
+            503, "Install ffmpeg (including ffprobe), then import your audio again."
+        )
+    common = ["-v", "error", "-protocol_whitelist", "file,pipe", "-format_whitelist", AUDIO_FORMATS]
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                *common,
+                "-show_entries",
+                "format=duration:stream=codec_type,duration",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=60,
+            check=True,
+        )
+        metadata = json.loads(probe.stdout)
+        audio_streams = [
+            stream for stream in metadata.get("streams", []) if stream.get("codec_type") == "audio"
+        ]
+        if not audio_streams:
+            raise ValueError("no audio stream")
+        duration = float(
+            audio_streams[0].get("duration", metadata.get("format", {}).get("duration", 0))
+        )
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("invalid duration")
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                *common,
+                "-xerror",
+                "-i",
+                str(path),
+                "-map",
+                "0:a:0",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            timeout=60,
+            check=True,
+        )
+        return duration
+    except subprocess.TimeoutExpired as error:
+        raise HTTPException(
+            422, "Audio validation took too long. Try a shorter audio file."
+        ) from error
+    except (subprocess.CalledProcessError, ValueError, TypeError, OSError) as error:
+        raise HTTPException(
+            422, "This file could not be decoded as audio. Try WAV, MP3, M4A, or FLAC."
+        ) from error
+
+
+def _local_address(value: str, *, origin=False):
+    try:
+        parsed = urlsplit(value if origin else f"//{value}")
+        return (
+            parsed.hostname in {"localhost", "127.0.0.1"}
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.path
+            and not parsed.query
+            and not parsed.fragment
+            and (not origin or parsed.scheme in {"http", "https"})
+            and (parsed.port is None or 0 < parsed.port < 65536)
+        )
+    except ValueError:
+        return False
+
+
+def create_app(storage_dir: Path | str | None = None, *, engine=None):
+    root = Path(
+        storage_dir
+        or os.environ.get("EXACT_COVER_DATA_DIR", Path.home() / ".local/share/exact-cover")
+    )
+
+    @asynccontextmanager
+    async def lifespan(app):
+        store = JobStore(root, engine)
+        app.state.store = store
+        store.worker.start()
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(store.close)
+
+    app = FastAPI(title="Exact Cover local engine", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"https?://(?:localhost|127\.0\.0\.1)(?::[0-9]+)?",
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "X-File-Name", "Range"],
+        expose_headers=["Content-Range"],
+    )
+
+    @app.middleware("http")
+    async def local_requests_only(request: Request, call_next):
+        origins = request.headers.getlist("origin")
+        hosts = request.headers.getlist("host")
+        if len(hosts) != 1 or not _local_address(hosts[0]):
+            return JSONResponse(
+                {"detail": "This service only accepts localhost requests."}, status_code=403
+            )
+        if len(origins) > 1 or (origins and not _local_address(origins[0], origin=True)):
+            return JSONResponse(
+                {"detail": "This service only accepts local browser origins."}, status_code=403
+            )
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, error):
+        return JSONResponse(
+            {"detail": "Invalid request. Supply the required file or section identifiers."},
+            status_code=422,
+        )
+
+    @app.get("/health")
+    async def health():
+        models_available = engine is not None or all(
+            importlib.util.find_spec(name) is not None
+            for name in ("audio_separator", "faster_whisper")
+        )
+        has_decoder = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+        message = "The local audio engine is ready."
+        if not has_decoder:
+            message = "Install ffmpeg (including ffprobe) to import and process audio."
+        elif not models_available:
+            message = (
+                "Install model dependencies with uv sync --extra models before creating a cover."
+            )
+        return {"ok": True, "models_available": models_available, "message": message}
+
+    @app.post("/uploads", status_code=201)
+    async def upload(request: Request):
+        store = app.state.store
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                length = int(content_length)
+            except ValueError as error:
+                raise HTTPException(400, "Invalid upload length.") from error
+            if length < 0:
+                raise HTTPException(400, "Invalid upload length.")
+            if length > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "Choose an audio file no larger than 64 MiB.")
+        upload_id = uuid4().hex
+        path = root / "uploads" / f"{upload_id}.audio"
+        name = unquote(request.headers.get("x-file-name", "audio"))
+        name = name.replace("\\", "/").rsplit("/", 1)[-1]
+        name = "".join(character for character in name if character.isprintable())[:255] or "audio"
+        complete = False
+        try:
+            size = 0
+            with path.open("xb") as file:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_BYTES:
+                        raise HTTPException(413, "Choose an audio file no larger than 64 MiB.")
+                    file.write(chunk)
+            if size == 0:
+                raise HTTPException(422, "The audio file is empty.")
+            duration = await asyncio.to_thread(_validate_audio, path)
+            metadata = {"id": upload_id, "name": name, "duration": duration}
+            with store.lock:
+                _write_json(path.with_suffix(".json"), metadata)
+                store.uploads[upload_id] = metadata
+            complete = True
+            return metadata
+        finally:
+            if not complete:
+                path.unlink(missing_ok=True)
+
+    @app.post("/jobs", status_code=202)
+    async def create_job(body: JobInput):
+        return app.state.store.create(body.song_id, body.vocal_id)
+
+    @app.get("/jobs/{job_id}")
+    async def get_job(job_id: str):
+        return app.state.store.get(job_id)
+
+    @app.post("/jobs/{job_id}/choose", status_code=202)
+    async def choose(job_id: str, body: ChoiceInput):
+        return app.state.store.choose(job_id, body.candidate_id)
+
+    def output(job_id, name):
+        store = app.state.store
+        with store.lock:
+            if store.get(job_id)["phase"] != "ready":
+                raise HTTPException(409, "This cover's audio is not ready yet.")
+            path = store.work_dir(job_id) / name
+            if not path.is_file():
+                raise HTTPException(404, "The exported audio is missing. Create the cover again.")
+            return FileResponse(path, media_type="audio/wav", filename=f"cover-{job_id}-{name}")
+
+    @app.get("/jobs/{job_id}/mix.wav")
+    async def mix(job_id: str):
+        return output(job_id, "mix.wav")
+
+    @app.get("/jobs/{job_id}/original.wav")
+    async def original(job_id: str):
+        return output(job_id, "original.wav")
+
+    return app
+
+
+app = create_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8891)

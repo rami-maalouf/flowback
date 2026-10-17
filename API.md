@@ -14,6 +14,8 @@ The local development service binds to 127.0.0.1:8891. Browser origins on localh
 - `GET /jobs/{id}/mix.wav`: rendered cover, only when ready.
 - `GET /jobs/{id}/original.wav`: same section of original song for comparison, only when ready.
 
+Audio endpoints support HTTP byte ranges and expose `Content-Range` to local browser clients. Export downloads in 256 KiB chunks to stay within Exact's response and native execution limits. Once prepared, a separate user press opens the save dialog with browser activation intact.
+
 A job snapshot has exactly these fields: `id`, `phase`, `message`, `error`, `candidates`, `selected_id`, `start`, `end`, `duration`, `warning`. Phases: `queued`, `separating`, `transcribing`, `matching`, `choose`, `rendering`, `ready`, `failed`. Numeric fields default to zero, strings to empty, candidates to an empty list. Candidates have the fields in `cover_engine.models.Candidate`. Scores are matching heuristics, not calibrated probabilities. Errors use `{ "detail": string }` with an appropriate non-2xx status. Preserve completed jobs and uploads on restart; mark interrupted jobs failed with a retry instruction.
 
 ## audio engine interface

@@ -1,5 +1,10 @@
 {
   "name": "exact-cover",
   "private": true,
+  "scripts": {
+    "dev:web": "bun dev.mjs web",
+    "dev:mac": "bun dev.mjs mac",
+    "typecheck": "bunx --package typescript tsc --noEmit --strict --target ES2022 --module esnext --moduleResolution bundler app.ts"
+  },
   "dependencies": {}
 }

@@ -12,7 +12,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-models = ["audio-separator[cpu]>=0.40", "faster-whisper>=1.2,<2"]
+models = [
+    "audio-separator[cpu]>=0.40",
+    "audioread>=3.1.0",
+    "av>=11,<17",
+    "faster-whisper>=1.2,<2",
+    "librosa>=0.10,<1",
+]
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.12,<1"]

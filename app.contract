@@ -1,24 +1,189 @@
-// Exact Cover: the view. app.ts answers what it asks for. Colours, fonts,
-// sizes and the safe area are left unsaid, so each platform supplies its own:
-// the header is the navigation bar, its heading the title, its button a bar item.
-shape Greeting
-  text: string
+shape Candidate
+  id: string
+  title: string
+  start: number
+  end: number
+  coverage: number
+  score: number
+  lyrics: string
+
+shape Job
+  id: string
+  phase: string
+  message: string
+  error: string
+  candidates: Candidate[]
+  selected_id: string
+  start: number
+  end: number
+  duration: number
+  warning: string
+
+shape Session
+  song_id: string
+  song_name: string
+  song_duration: number
+  vocal_id: string
+  vocal_name: string
+  vocal_duration: number
+  job: Job
+  online: bool
+  models_available: bool
+  error: string
+
+shape Reply
+  ok: bool
+  error: string
+
+fn pad(n: number): string = n < 10 ? `0${n}` : `${n}`
+fn duration(n: number): string = `${floor(n / 60)}:${pad(floor(n) % 60)}`
 
 routes nav
   home "/"
 
 component ExactCover
-  resource greeting = greeting("Exact Cover") as shape Greeting
-  state liked = false
-  action like
-    liked = not liked
+  resource session = loadSession() as shape Session
+  mutation changed as shape Reply refreshes session
+  mutation exported as shape Reply then exportPrepared
+  state comparing = false
+  state exportNote = ""
+  state exportReady = false
+  derive busy = session.job.phase == "queued" or session.job.phase == "separating" or session.job.phase == "transcribing" or session.job.phase == "matching" or session.job.phase == "rendering"
+  derive error = match changed { case some(r) => r.error, case none => "" }
+  derive exportError = match exported { case some(r) => r.error, case none => "" }
+  derive canCreate = session.online and session.models_available and session.song_id != "" and session.vocal_id != "" and not busy and not pending(changed) and not pending(exported)
+  task poll mount
+    every(2000, refresh)
+  action refresh
+    if not pending(changed)
+      refresh session
+  action chooseSong
+    showPicker("song-file")
+  action chooseVocal
+    showPicker("vocal-file")
+  action songPicked(files: Picked[])
+    match first(files)
+      case some(f)
+        exportReady = false
+        send changed = importAudio("song", f.path, f.name, f.size)
+      case none
+        exportNote = ""
+  action vocalPicked(files: Picked[])
+    match first(files)
+      case some(f)
+        exportReady = false
+        send changed = importAudio("vocal", f.path, f.name, f.size)
+      case none
+        exportNote = ""
+  action create
+    comparing = false
+    exportNote = ""
+    exportReady = false
+    send changed = createCover()
+  action choose(id: string)
+    comparing = false
+    exportNote = ""
+    exportReady = false
+    send changed = chooseMatch(id)
+  action hearCover
+    comparing = false
+  action hearOriginal
+    comparing = true
+  action export
+    exportNote = ""
+    if exportReady
+      saveFile("export-file", "app:/tmp/output/cover.wav", "my-cover.wav")
+    else
+      send exported = prepareExport()
+  action exportPrepared
+    exportReady = exportError == ""
+  action saved(name: string)
+    exportNote = "Cover exported."
+  action saveCancelled
+    exportNote = "Export cancelled. Your cover is still here."
   view
-    main testId="root" navigationKey=`${top(nav).id}` navigationBack="back" width="100%" height="100%"
-      for e in stack(nav) key=e.id
-        column navigationKey=`${e.id}` navigationScroll="content" position="absolute" inset=0 display="flex" flex-direction="column"
+    main navigationKey=`${top(nav).id}` navigationBack="back" testId="root" accent-color="light-dark(#2463c5, #82b5ff)" width="100%" height="100%" background-color="-exact-background"
+      for entry in stack(nav) key=entry.id
+        column navigationKey=`${entry.id}` navigationScroll="content" position="absolute" inset=0 display="flex" flex-direction="column"
           header display="flex" align-items="center"
             text "Exact Cover" role="heading" aria-level=1 flex=1
-            button press=like aria-label=(liked ? "Unlike" : "Like") testId="like"
-              image (liked ? "symbol:heart-fill" : "symbol:heart")
-          scroll id="content" flex=1 min-height=0 padding=16
-            text greeting.text testId="greeting"
+          scroll id="content" flex=1 min-height=0
+            column max-width=720 margin-left="auto" margin-right="auto" padding=24 gap=28
+              column gap=10 padding-top=16
+                text "Your voice.\nThe original backing." role="heading" aria-level=2 font-size=34 font-weight=650 line-height=1.15 testId="intro"
+                text "Bring the song and your performance. We’ll match the lyrics, align your timing, and mix just the part you sang." color="-exact-secondary-label" line-height=1.5 max-width=580
+              row gap=16 flex-wrap="wrap" align-items="stretch"
+                column flex="1 1 260px" min-width=0 padding=20 gap=14 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="song-card"
+                  row gap=10 align-items="center"
+                    image "symbol:waveform" width=22 height=22 color="-exact-secondary-label"
+                    text "Original song" font-weight=600
+                  column gap=5 flex=1
+                    text (session.song_name == "" ? "Start with the full song" : session.song_name) font-weight=500 line-clamp=2 testId="song-name"
+                    text (session.song_name == "" ? "Include the artist’s vocals so we can find your section." : `${duration(session.song_duration)} · ready to match`) font="-exact-footnote" color="-exact-secondary-label" line-height=1.4
+                  button press=chooseSong buttonStyle="bordered" disabled=(busy or pending(changed) or pending(exported)) testId="choose-song"
+                    text (session.song_name == "" ? "Choose song…" : "Change song…")
+                column flex="1 1 260px" min-width=0 padding=20 gap=14 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="vocal-card"
+                  row gap=10 align-items="center"
+                    image "symbol:person" width=22 height=22 color="-exact-secondary-label"
+                    text "Your vocals" font-weight=600
+                  column gap=5 flex=1
+                    text (session.vocal_name == "" ? "A verse, a chorus, or all of it" : session.vocal_name) font-weight=500 line-clamp=2 testId="vocal-name"
+                    text (session.vocal_name == "" ? "The same lyrics, performed by you. A clean vocal works best." : `${duration(session.vocal_duration)} · ready to align`) font="-exact-footnote" color="-exact-secondary-label" line-height=1.4
+                  button press=chooseVocal buttonStyle="bordered" disabled=(busy or pending(changed) or pending(exported)) testId="choose-vocal"
+                    text (session.vocal_name == "" ? "Choose vocals…" : "Change vocals…")
+              input type="file" id="song-file" testId="song-file" display="none" change=songPicked
+              input type="file" id="vocal-file" testId="vocal-file" display="none" change=vocalPicked
+              column gap=10
+                row gap=12 flex-wrap="wrap" align-items="center"
+                  button press=create buttonStyle=(session.job.phase == "ready" ? "bordered" : "filled") disabled=(not canCreate) testId="create-cover"
+                    text (busy ? "Creating your cover…" : session.job.id == "" ? "Create cover" : "Create again")
+                  text (pending(changed) ? "Preparing your files…" : "Only the section you sang will be exported.") font="-exact-footnote" color="-exact-secondary-label"
+                if not session.online
+                  text "The local audio engine is unavailable. Start it, then this screen will reconnect automatically." color="-exact-secondary-label" testId="offline"
+                else if not session.models_available
+                  text "The audio engine needs its model dependencies installed before it can process a cover." color="-exact-secondary-label" testId="models-missing"
+                if error != ""
+                  text error color="-exact-system-red" role="alert" testId="action-error"
+                if session.error != ""
+                  text session.error color="-exact-system-red" role="alert" testId="session-error"
+              if busy
+                column padding=20 gap=10 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="processing"
+                  progress aria-label="Creating cover"
+                  text session.job.message font-weight=600 testId="progress-message"
+                  text "Your files stay on this Mac. The first run may download model files." font="-exact-footnote" color="-exact-secondary-label"
+              if session.job.phase == "failed"
+                column padding=20 gap=8 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="failure"
+                  text "This cover needs another try" font-weight=600
+                  text session.job.error role="alert" testId="job-error"
+              if session.job.phase == "choose"
+                column gap=14 testId="matches"
+                  text "Which section did you sing?" role="heading" aria-level=3 font-size=20 font-weight=600
+                  text "These lyrics appear in more than one place, or the match needs your confirmation." color="-exact-secondary-label"
+                  for candidate in session.job.candidates key=candidate.id
+                    column padding=16 gap=10 border-radius=12 background-color="-exact-secondary-background"
+                      text `${duration(candidate.start)} - ${duration(candidate.end)}` font-weight=600
+                      text candidate.lyrics line-clamp=3 color="-exact-secondary-label"
+                      button press=choose(candidate.id) disabled=pending(changed) buttonStyle="bordered" testId=`match-${candidate.id}`
+                        text "Use this section"
+              if session.job.phase == "ready"
+                column padding=20 gap=16 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="result"
+                  row gap=10 align-items="center" flex-wrap="wrap"
+                    text "Your cover is ready" role="heading" aria-level=3 font-size=22 font-weight=600 flex=1
+                    text duration(session.job.duration) font-variant-numeric="tabular-nums" color="-exact-secondary-label"
+                  text `From ${duration(session.job.start)} to ${duration(session.job.end)} in the original song.` color="-exact-secondary-label" testId="result-range"
+                  row gap=8 flex-wrap="wrap"
+                    button press=hearCover buttonStyle=(comparing ? "bordered" : "filled") testId="hear-cover"
+                      text "Your cover"
+                    button press=hearOriginal buttonStyle=(comparing ? "filled" : "bordered") testId="hear-original"
+                      text "Original section"
+                  audio `http://127.0.0.1:8891/jobs/${session.job.id}/${comparing ? "original" : "mix"}.wav` controls=true width="100%" height=54 testId="preview"
+                  if session.job.warning != ""
+                    text session.job.warning font="-exact-footnote" color="-exact-secondary-label" testId="result-warning"
+                  button press=export buttonStyle="filled" disabled=pending(exported) testId="export"
+                    text (pending(exported) ? "Preparing export…" : exportReady ? "Save WAV…" : "Prepare WAV")
+                  if exportError != ""
+                    text exportError color="-exact-system-red" role="alert"
+                  if exportNote != ""
+                    text exportNote font="-exact-footnote" testId="export-note"
+              input id="export-file" display="none" change=saved cancel=saveCancelled
+              text "Original lyrics. Your own performance." font="-exact-footnote" color="-exact-secondary-label" padding-bottom=8
