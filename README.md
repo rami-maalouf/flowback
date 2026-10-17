@@ -107,6 +107,7 @@ These dependencies and model weights have their own licenses. Pedalboard is GPL-
 ## Verification and current limits
 
 ```sh
+bun install --frozen-lockfile
 uv run --extra models pytest -q
 uv run --extra models ruff check cover_engine tests
 uv run --extra models ruff format --check cover_engine tests

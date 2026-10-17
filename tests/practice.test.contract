@@ -18,7 +18,7 @@ test "a song groups takes and supports metric sorting and selection"
   clock data
   expect state sortBy == "range"
 
-test "adding a take pauses the hidden player and keeps an unfinished named draft"
+test "adding a take unmounts the player and keeps an unfinished named draft"
   size 390x844
   clock data
   tap "Open Practice fixture"

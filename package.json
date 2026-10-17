@@ -6,5 +6,8 @@
     "dev:mac": "bun dev.mjs mac",
     "typecheck": "bunx --package typescript tsc --noEmit --strict --target ES2022 --module esnext --moduleResolution bundler app.ts"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "devDependencies": {
+    "happy-dom": "^21.0.3"
+  }
 }

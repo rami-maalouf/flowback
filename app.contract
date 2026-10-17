@@ -563,8 +563,8 @@ component ExactCover
                     text "Your performance, on the original track." color="text.secondary" font="-exact-subheadline"
                 column gap=14 testId="takes"
                   row gap=12 align-items="center" flex-wrap="wrap"
-                    text `Your takes (${takes.takes.length})` role="heading" aria-level=3 font-size=17 font-weight=600 flex=1
-                    select value=sortBy change=sortTakes aria-label="Sort takes" testId="take-sort"
+                    text `Your takes (${takes.takes.length})` role="heading" aria-level=3 font-size=17 font-weight=600 flex=1 min-width=120
+                    select value=sortBy change=sortTakes aria-label="Sort takes" testId="take-sort" max-width="100%"
                       option "Newest first" value="newest"
                       option "Lyric agreement" value="lyrics"
                       option "Timing difference" value="timing"

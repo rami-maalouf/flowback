@@ -54,7 +54,7 @@ The [mir_eval melody definitions](https://mir-eval.readthedocs.io/latest/api/mel
 
 The library groups covers by the exact imported original song. Each take keeps its recording, levels, export, selected section, and analysis. Reusing a source avoids repeating successful reference separation and transcription when the model configuration is unchanged.
 
-The song screen puts listening first, then a compact take list and the selected take's measurements. A user can sort by one dimension, inspect the evidence, and compare to the original. Different sections are identified and excluded from the selected section's metric ranking; unavailable values appear last. Newer methods do not silently compete with older cached measurements.
+The song screen groups a compact take list, the selected take's listening controls, and its measurements. A user can sort by one dimension, inspect the evidence, and compare to the original. Different sections are identified and excluded from the selected section's metric ranking; unavailable values appear last. Newer methods do not silently compete with older cached measurements.
 
 Switching takes preserves position in original-song coordinates when the excerpts overlap. Independent raw vocal players expose what was actually measured, with the original reference labeled as separated audio. They pause the mixed playback and each other. This helps hear consonants and rhythm that accompaniment or timing correction could mask.
 
