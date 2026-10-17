@@ -9,6 +9,7 @@ class Word:
     text: str
     start: float
     end: float
+    probability: float | None = None
 
 
 @dataclass(frozen=True)
