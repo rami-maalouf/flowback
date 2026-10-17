@@ -115,6 +115,7 @@ const sources: Sources = {
         return {id: take.id, name: take.name || take.vocal_name, saved_at: savedAt(take.created_at),
           phase: take.phase, status: phaseLabel(take.phase), duration: take.duration, start: take.start, end: take.end,
           comparable: take.comparable,
+          assessment_status: take.assessment.status,
           analysis_status: analysisLabels[take.assessment.status] || 'Not analyzed',
           lyrics: measurementText(metrics.find(metric => metric.id === 'lyric_agreement')),
           timing: measurementText(metrics.find(metric => metric.id === 'timing')),

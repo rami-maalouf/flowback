@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import youtube
 from .assessments import AssessmentStore, envelope
 from .live import STUDIO, LiveMixer
+from .persistence import write_json as _write_json
 
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 ACTIVE_PHASES = {"queued", "separating", "transcribing", "matching", "rendering"}
@@ -75,15 +76,6 @@ class LevelsInput(MixInput):
 
 class ExportInput(MixInput):
     revision: int = Field(ge=1, strict=True)
-
-
-def _write_json(path: Path, value):
-    temporary = path.with_suffix(".tmp")
-    with temporary.open("w") as file:
-        json.dump(value, file, allow_nan=False)
-        file.flush()
-        os.fsync(file.fileno())
-    temporary.replace(path)
 
 
 def _snapshot(job_id):
@@ -263,16 +255,27 @@ class JobStore:
     def songs(self):
         with self.lock:
             groups = {}
-            for cover in self.library()["covers"]:
-                song_id = self.jobs[cover["id"]]["song_id"]
+            for job_id, job in sorted(
+                self.jobs.items(), key=lambda item: item[1]["created_at"], reverse=True
+            ):
+                song_id = job["song_id"]
                 if song_id in groups:
                     groups[song_id]["take_count"] += 1
                     continue
+                song_name = self.uploads.get(song_id, {}).get("name", "Original song")
+                snapshot = job["snapshot"]
                 groups[song_id] = {
-                    **{key: value for key, value in cover.items() if key != "id"},
+                    "title": job.get("title") or song_name,
+                    "song_name": song_name,
+                    "vocal_name": self.uploads.get(job["vocal_id"], {}).get("name", "Your vocals"),
+                    "created_at": job["created_at"],
+                    "phase": snapshot["phase"],
+                    "duration": snapshot["duration"],
+                    "start": snapshot["start"],
+                    "end": snapshot["end"],
                     "id": song_id,
                     "take_count": 1,
-                    "latest_take_id": cover["id"],
+                    "latest_take_id": job_id,
                 }
             return {"songs": list(groups.values())}
 
@@ -389,10 +392,17 @@ class JobStore:
 
     def add_take(self, song_id, vocal_id, name=""):
         with self.lock:
-            song = next((song for song in self.songs()["songs"] if song["id"] == song_id), None)
-            if song is None:
+            latest = max(
+                (job for job in self.jobs.values() if job["song_id"] == song_id),
+                key=lambda job: job["created_at"],
+                default=None,
+            )
+            if latest is None:
                 raise HTTPException(404, "This song was not found.")
-            return self.create(song_id, vocal_id, song["title"], name)
+            title = latest.get("title") or self.uploads.get(song_id, {}).get(
+                "name", "Original song"
+            )
+            return self.create(song_id, vocal_id, title, name)
 
     def create(self, song_id, vocal_id, title="", take_name=""):
         with self.lock:
@@ -792,23 +802,23 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None, assessor=N
         return app.state.store.create(body.song_id, body.vocal_id, body.title, body.take_name)
 
     @app.get("/songs")
-    async def songs():
+    def songs():
         return app.state.store.songs()
 
     @app.get("/songs/{song_id}/takes")
-    async def takes(song_id: str, selected: str = "", sort: str = "newest"):
+    def takes(song_id: str, selected: str = "", sort: str = "newest"):
         return app.state.store.takes(song_id, selected, sort)
 
     @app.post("/songs/{song_id}/takes", status_code=202)
-    async def add_take(song_id: str, body: TakeInput):
+    def add_take(song_id: str, body: TakeInput):
         return app.state.store.add_take(song_id, body.vocal_id, body.name)
 
     @app.get("/jobs/{job_id}/assessment")
-    async def assessment(job_id: str):
+    def assessment(job_id: str):
         return app.state.store.assessments.get(job_id)
 
     @app.post("/jobs/{job_id}/assessment", status_code=202)
-    async def analyze_take(job_id: str):
+    def analyze_take(job_id: str):
         try:
             return app.state.store.assessments.submit(job_id)
         except OSError as error:

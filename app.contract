@@ -70,6 +70,7 @@ shape Take
   start: number
   end: number
   comparable: bool
+  assessment_status: string
   analysis_status: string
   lyrics: string
   timing: string
@@ -585,7 +586,7 @@ component ExactCover
                             if take.duration > 0
                               text `· ${duration(take.start)} - ${duration(take.end)}` font="-exact-footnote" color="text.secondary"
                             text `· ${take.phase == "ready" ? take.analysis_status : take.status}` font="-exact-footnote" color="text.secondary"
-                          if take.analysis_status == "Analysis ready"
+                          if take.assessment_status == "ready"
                             row gap=10 flex-wrap="wrap"
                               text `Word agreement ${take.lyrics}` font="-exact-caption2" color="text.secondary"
                               text `Timing ${take.timing}` font="-exact-caption2" color="text.secondary"

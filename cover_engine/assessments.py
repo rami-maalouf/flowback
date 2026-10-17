@@ -1,11 +1,8 @@
-"""persistent, independent assessment work keyed by raw inputs and method."""
-
 import hashlib
 import importlib
 import json
 import logging
 import math
-import os
 import queue
 import threading
 from copy import deepcopy
@@ -13,6 +10,8 @@ from tempfile import NamedTemporaryFile
 
 import soundfile as sf
 from fastapi import HTTPException
+
+from .persistence import write_json
 
 LOGGER = logging.getLogger(__name__)
 
@@ -124,13 +123,7 @@ class AssessmentStore:
         raise HTTPException(409, "The raw analysis files are changing. Wait and retry analysis.")
 
     def _save(self, key, record):
-        destination = self.root / f"{key}.json"
-        temporary = destination.with_suffix(".tmp")
-        with temporary.open("w") as file:
-            json.dump(record, file, allow_nan=False)
-            file.flush()
-            os.fsync(file.fileno())
-        temporary.replace(destination)
+        write_json(self.root / f"{key}.json", record)
 
     def get(self, job_id):
         identity = self._identity(job_id)

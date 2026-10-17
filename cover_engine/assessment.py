@@ -1,5 +1,3 @@
-"""practice measurements from raw audio, without scoring voice identity or talent."""
-
 import json
 import math
 from dataclasses import dataclass
@@ -12,7 +10,6 @@ from .alignment import token
 
 VERSION = "practice-v2"
 
-# these are engineering defaults, not calibrated probabilities of correct pronunciation or pitch.
 MIN_ASR_PROBABILITY = 0.5
 MIN_ANCHORS = 6
 MIN_ANCHOR_SPAN = 2.0
@@ -48,8 +45,7 @@ def _reliable(word):
     return probability is None or (_number(probability) and MIN_ASR_PROBABILITY <= probability <= 1)
 
 
-def _exact_matches(reference, performance):
-    # longest common subsequence counts ordered exact tokens, never fuzzy matching scores.
+def _ordered_exact_match_count(reference, performance):
     row = [0] * (len(reference) + 1)
     for performed in performance:
         previous = row
@@ -135,8 +131,8 @@ def _pitch(path, start, end):
     samples, rate = sf.read(path, start=first, stop=last, dtype="float32", always_2d=True)
     if not np.isfinite(samples).all():
         return _Pitch(empty, empty, reason="The audio contains invalid samples.")
-    # choose the strongest channel so phase-inverted stereo cannot cancel the voice.
-    samples = samples[:, np.argmax(np.mean(samples.astype(float) ** 2, axis=0))]
+    strongest_channel = np.argmax(np.mean(samples.astype(float) ** 2, axis=0))
+    samples = samples[:, strongest_channel]
     if not len(samples) or np.max(np.abs(samples)) < 1e-6:
         return _Pitch(empty, empty, reason="No audible voiced signal in this section.")
     try:
@@ -147,7 +143,6 @@ def _pitch(path, start, end):
         return _Pitch(empty, empty, reason="Pitch analysis requires the local model dependencies.")
     if rate != PITCH_RATE:
         samples = librosa.resample(samples, orig_sr=rate, target_sr=PITCH_RATE)
-    # bounded chunks and inference batches limit memory; padding supplies context across chunk edges.
     chunk_size = PITCH_CHUNK_SECONDS * PITCH_RATE
     context = PITCH_HOP * math.ceil(PITCH_FRAME * 2 / PITCH_HOP)
     tracks, grids, energies, periodicities, stable_periodicities = [], [], [], [], []
@@ -155,7 +150,6 @@ def _pitch(path, start, end):
         stop = min(len(samples), cursor + chunk_size)
         left, right = max(0, cursor - context), min(len(samples), stop + context)
         segment = samples[left:right]
-        # the full supported frequency band avoids assuming a speaking or singing register.
         # framewise decoding also avoids a viterbi endpoint bias seen on the real reference.
         with torch.inference_mode():
             tensor = torch.from_numpy(np.ascontiguousarray(segment))[None]
@@ -186,7 +180,6 @@ def _pitch(path, start, end):
     frequencies = np.concatenate(tracks)
     times = np.concatenate(grids)
     energy = np.concatenate(energies)
-    # a relative threshold preserves ordinary gain changes; the absolute floor rejects numerical silence.
     energy_floor = max(1e-6, float(np.percentile(energy, 95)) * 10 ** (-35 / 20))
     usable = (
         (np.concatenate(periodicities) >= MIN_PERIODICITY)
@@ -203,7 +196,6 @@ def _pitch(path, start, end):
     ceiling_note = 69 + 12 * math.log2(PITCH_MAX_HZ / 440)
     near_boundary = usable & ((semitones < floor_note + 1) | (semitones > ceiling_note - 1))
     boundary = float(near_boundary.sum() / usable.sum()) if usable.any() else 0
-    # an octave-sized jump can be real singing or tracking error; report it without silently correcting it.
     delta = np.abs(np.diff(semitones[usable]))
     gaps = np.diff(times[usable])
     jump_count = int(np.count_nonzero((delta >= 10) & (delta <= 14) & (gaps <= 0.2)))
@@ -250,7 +242,7 @@ def assess(work_dir: Path, candidate_id: str) -> dict:
     all_words = selected_reference + selected_performance
     unknown = sum(word.get("probability") is None for word in all_words)
     rejected = sum(not _reliable(word) for word in all_words)
-    exact_count = _exact_matches(
+    exact_count = _ordered_exact_match_count(
         [token(word["text"]) for word in selected_reference],
         [token(word["text"]) for word in selected_performance],
     )
