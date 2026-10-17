@@ -50,6 +50,7 @@ class TakeInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     vocal_id: str = Field(min_length=1, max_length=64)
     name: str = Field(default="", max_length=160)
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class YoutubeInput(BaseModel):
@@ -390,8 +391,16 @@ class JobStore:
         overlap = max(0, min(first[1], second[1]) - max(first[0], second[0]))
         return overlap / (first[1] - first[0]) >= 0.8 and overlap / (second[1] - second[0]) >= 0.8
 
-    def add_take(self, song_id, vocal_id, name=""):
+    def add_take(self, song_id, vocal_id, name="", request_id=None):
         with self.lock:
+            if request_id is not None:
+                for job_id, job in self.jobs.items():
+                    if job["song_id"] == song_id and job.get("request_id") == request_id:
+                        if job["vocal_id"] != vocal_id:
+                            raise HTTPException(
+                                409, "This take request was already used for a different recording."
+                            )
+                        return self.get(job_id)
             latest = max(
                 (job for job in self.jobs.values() if job["song_id"] == song_id),
                 key=lambda job: job["created_at"],
@@ -402,9 +411,9 @@ class JobStore:
             title = latest.get("title") or self.uploads.get(song_id, {}).get(
                 "name", "Original song"
             )
-            return self.create(song_id, vocal_id, title, name)
+            return self.create(song_id, vocal_id, title, name, request_id=request_id)
 
-    def create(self, song_id, vocal_id, title="", take_name=""):
+    def create(self, song_id, vocal_id, title="", take_name="", *, request_id=None):
         with self.lock:
             if song_id not in self.uploads or vocal_id not in self.uploads:
                 raise HTTPException(404, "An uploaded audio file was not found. Import it again.")
@@ -419,7 +428,14 @@ class JobStore:
                 "title": title.strip(),
                 "take_name": take_name.strip(),
             }
-            self._save(job_id)
+            if request_id is not None:
+                self.jobs[job_id]["request_id"] = request_id
+            try:
+                self._save(job_id)
+            except Exception:
+                del self.jobs[job_id]
+                shutil.rmtree(self.root / "jobs" / job_id, ignore_errors=True)
+                raise
             self.pending.put((job_id, None))
             return deepcopy(snapshot)
 
@@ -811,7 +827,7 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None, assessor=N
 
     @app.post("/songs/{song_id}/takes", status_code=202)
     def add_take(song_id: str, body: TakeInput):
-        return app.state.store.add_take(song_id, body.vocal_id, body.name)
+        return app.state.store.add_take(song_id, body.vocal_id, body.name, body.request_id)
 
     @app.get("/jobs/{job_id}/assessment")
     def assessment(job_id: str):

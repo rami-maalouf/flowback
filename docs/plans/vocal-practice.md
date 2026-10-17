@@ -10,7 +10,7 @@ The original upload ID is the stable song identity. Group legacy jobs only when 
 
 - GET /songs -> {songs:[{id: original upload id, title, song_name, created_at, take_count, latest_take_id, phase, duration, start, end, vocal_name}]}.
 - GET /songs/{song_id}/takes?selected={job_id}&sort={newest|lyrics|timing|pace|pitch|range} -> {song_id,title,takes:[{id,name,vocal_name,created_at,phase,duration,start,end,selected_id,comparable,assessment}]}.
-- POST /songs/{song_id}/takes {vocal_id,name?:string} -> existing job snapshot. Reuse the original and inherit the song title; name is take-specific (filename fallback). POST /jobs accepts optional take_name too.
+- POST /songs/{song_id}/takes {vocal_id,name?:string,request_id?:string} -> existing job snapshot. Reuse the original and inherit the song title; name is take-specific (filename fallback). POST /jobs accepts optional take_name too. Optional per-song request IDs persist with creation so retries reuse the accepted take after connection/storage failures or restart.
 - GET /jobs/{id}/assessment -> assessment envelope, current candidate only.
 - POST /jobs/{id}/assessment -> queue/retry current candidate assessment; does not change playable job state. New ready covers automatically queue assessment; old ones can analyze on demand. Poll GET. Cache by original source, raw take, candidate, and method version; volume/render-only changes do not invalidate it.
 - Assessment envelope always contains status (not_started/queued/running/ready/failed), version, candidate_id, summary, error, metrics, notes, reference_text, performance_text, words, pitch. Unavailable data is explicit, never a zero score.

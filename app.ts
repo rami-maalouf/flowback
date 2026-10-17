@@ -145,7 +145,7 @@ const sources: Sources = {
   createTake: ([songId], _store, storage) => attempt(async () => {
     const path = takeDraftPath(songId);
     const draft = await read(storage, path);
-    const job = await (await request(`/songs/${encodeURIComponent(songId)}/takes`, post({vocal_id: draft.vocal_id, name: draft.take_name.trim()}))).json();
+    const job = await (await request(`/songs/${encodeURIComponent(songId)}/takes`, post({vocal_id: draft.vocal_id, name: draft.take_name.trim(), request_id: draft.vocal_id}))).json();
     const {job: ignored, ...session} = await (await request(`/jobs/${encodeURIComponent(job.id)}/session`)).json();
     await save(storage, {...empty, ...session});
     await save(storage, empty, path);
