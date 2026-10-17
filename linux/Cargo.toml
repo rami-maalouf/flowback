@@ -1,0 +1,19 @@
+[package]
+name = "exact-cover-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "exact-cover-linux"
+path = "src/main.rs"
+
+[dependencies]
+exact-logic = { path = "../../exact2/logic" }
+exact-linux = { path = "../../exact2/host/linux" }
+exact-js = { path = "../../exact2/js" }
+
+[build-dependencies]
+exact-js-bake = { path = "../../exact2/js/bake" }

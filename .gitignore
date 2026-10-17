@@ -1,0 +1,11 @@
+/target/
+/dist/
+/node_modules/
+/app.contract.d.ts
+/.exact/
+/.venv/
+/.cover-data/
+/.pytest_cache/
+/.ruff_cache/
+__pycache__/
+*.pyc
