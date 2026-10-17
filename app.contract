@@ -77,7 +77,10 @@ component ExactCover
   resource library = loadLibrary() as shape Library
   mutation changed as shape Reply refreshes session, library, draft then afterChange
   mutation exported as shape Reply then exportPrepared
-  state title = ""
+  state source = "file" persist
+  state youtubeUrl = "" persist
+  state youtubeDirty = false persist
+  state title = "" persist
   state intent = ""
   state openingCover = false
   state playerReadyKey = ""
@@ -97,7 +100,7 @@ component ExactCover
   derive busy = session.job.phase == "queued" or session.job.phase == "separating" or session.job.phase == "transcribing" or session.job.phase == "matching" or session.job.phase == "rendering"
   derive error = match changed { case some(r) => r.error, case none => "" }
   derive exportError = match exported { case some(r) => r.error, case none => "" }
-  derive canCreate = session.online and session.models_available and draft.song_id != "" and draft.vocal_id != "" and not pending(changed) and not pending(exported)
+  derive canCreate = not youtubeDirty and session.online and session.models_available and draft.song_id != "" and draft.vocal_id != "" and not pending(changed) and not pending(exported)
   task poll mount
     every(2000, refresh)
   action refresh
@@ -116,6 +119,19 @@ component ExactCover
   action addSong
     intent = ""
     nav = push(nav, "/add")
+  action chooseFileSource
+    source = "file"
+    youtubeDirty = false
+  action chooseYoutubeSource
+    source = "youtube"
+    youtubeDirty = youtubeUrl != ""
+  action editYoutube(value: string)
+    youtubeUrl = value
+    youtubeDirty = true
+  action importYoutube
+    intent = "youtube"
+    openingCover = false
+    send changed = importYoutubeAudio(youtubeUrl)
   action editTitle(value: string)
     title = value
   action afterChange
@@ -123,6 +139,12 @@ component ExactCover
       nav = intent == "create" ? replace(nav, "/cover") : push(nav, "/cover")
       if intent == "create"
         title = ""
+    if error == "" and intent == "youtube"
+      youtubeDirty = false
+    if error == "" and intent == "create"
+      youtubeUrl = ""
+      youtubeDirty = false
+      source = "file"
     intent = ""
   action openSaved(id: string)
     intent = "open"
@@ -160,6 +182,9 @@ component ExactCover
     playerReadyKey = ""
     draftKey = ""
     send changed = createCover(title)
+  action retry
+    intent = "retry"
+    send changed = retryCover()
   action choose(id: string)
     openingCover = false
     exportNote = ""
@@ -214,9 +239,9 @@ component ExactCover
       for entry in stack(nav) key=entry.id
         if entry.name == "home"
           column navigationKey=`${entry.id}` navigationScroll="library-content" navigationSplit="none" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="8px 16px"
               text "Flowback" role="heading" aria-level=1 flex=1
-              button press=addSong buttonStyle="filled" disabled=(pending(changed) or pending(exported)) testId="add-song"
+              button press=addSong buttonStyle="bordered-prominent" disabled=(pending(changed) or pending(exported)) testId="add-song"
                 text "Add song"
             scroll id="library-content" flex=1 min-height=0
               column width="100%" box-sizing="border-box" min-width=0 max-width=720 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="library"
@@ -251,7 +276,7 @@ component ExactCover
                 text "Songs and mix levels are saved on this Mac." font="-exact-footnote" color="-exact-secondary-label"
         if entry.name == "add"
           column navigationKey=`${entry.id}` navigationScroll="add-content" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="8px 16px"
               button id="back" press=back disabled=pending(changed) testId="add-back"
                 text "Your songs"
               text "Add song" role="heading" aria-level=2 flex=1
@@ -272,8 +297,22 @@ component ExactCover
                     column gap=5 flex=1
                       text (draft.song_name == "" ? "Start with the full song" : draft.song_name) font-weight=500 line-clamp=2 testId="song-name"
                       text (draft.song_name == "" ? "Include the artist’s vocals so we can find your section." : `${duration(draft.song_duration)} · ready to match`) font="-exact-footnote" color="-exact-secondary-label" line-height=1.4
-                    button press=chooseSong buttonStyle="bordered" disabled=pending(changed) testId="choose-song"
-                      text (draft.song_name == "" ? "Choose song…" : "Change song…")
+                    row gap=8 flex-wrap="wrap"
+                      button press=chooseFileSource buttonStyle=(source == "file" ? "bordered-prominent" : "bordered") disabled=pending(changed) testId="source-file"
+                        text "Audio file"
+                      button press=chooseYoutubeSource buttonStyle=(source == "youtube" ? "bordered-prominent" : "bordered") disabled=pending(changed) testId="source-youtube"
+                        text "YouTube link"
+                    if source == "file"
+                      button press=chooseSong buttonStyle="bordered" disabled=pending(changed) testId="choose-song"
+                        text (draft.song_name == "" ? "Choose song…" : "Change song…")
+                    else
+                      column gap=10
+                        input value=youtubeUrl input=editYoutube placeholder="https://youtube.com/watch?v=…" aria-label="YouTube link" disabled=pending(changed) testId="youtube-url" min-width=0
+                        button press=importYoutube buttonStyle="bordered" disabled=(youtubeUrl.trim() == "" or pending(changed)) testId="import-youtube"
+                          text (pending(changed) and intent == "youtube" ? "Importing from YouTube…" : "Import song")
+                        if error != "" and not pending(changed)
+                          text error color="-exact-system-red" role="alert" testId="youtube-error"
+                        text "A public video, up to 20 minutes. Import it before creating your cover." font="-exact-footnote" color="-exact-secondary-label" line-height=1.4
                   column flex="1 1 260px" min-width=0 padding=20 gap=14 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="vocal-card"
                     row gap=10 align-items="center"
                       image "symbol:person" width=22 height=22 color="-exact-secondary-label"
@@ -287,7 +326,7 @@ component ExactCover
                 input type="file" id="vocal-file" testId="vocal-file" display="none" change=vocalPicked
                 column gap=10
                   row gap=12 flex-wrap="wrap" align-items="center"
-                    button press=create buttonStyle="filled" disabled=(not canCreate) testId="create-cover"
+                    button press=create buttonStyle="bordered-prominent" disabled=(not canCreate) testId="create-cover"
                       text (pending(changed) and intent == "create" ? "Adding song…" : "Add song & create cover")
                     text (pending(changed) ? "Preparing your files…" : "Only the section you sang will be exported.") font="-exact-footnote" color="-exact-secondary-label"
                   if not session.online
@@ -300,7 +339,7 @@ component ExactCover
                     text draft.error color="-exact-system-red" role="alert" testId="session-error"
         if entry.name == "cover"
           column navigationKey=`${entry.id}` navigationScroll="cover-content" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="8px 16px"
               button press=back disabled=(pending(changed) or pending(exported)) testId="cover-back"
                 text "Your songs"
               text "Your cover" role="heading" aria-level=2 flex=1
@@ -322,6 +361,8 @@ component ExactCover
                   column padding=20 gap=8 border-radius=16 background-color="-exact-secondary-background" border-style="solid" border-width=1 border-color="-exact-separator" testId="failure"
                     text "This cover needs another try" font-weight=600
                     text session.job.error role="alert" testId="job-error"
+                    button press=retry buttonStyle="bordered" disabled=(pending(changed) or not session.online or not session.models_available) testId="retry-cover"
+                      text "Try again"
                 if session.job.phase == "choose"
                   column gap=14 testId="matches"
                     text "Which section did you sing?" role="heading" aria-level=3 font-size=20 font-weight=600
@@ -343,7 +384,7 @@ component ExactCover
                     iframe src=`http://127.0.0.1:8891/studio/index.html?job=${session.job.id}&revision=${session.job.revision}` message=liveMessage aria-label="Live cover mixer" width="100%" height=280 border-width=0 testId="live-mixer"
                     if session.job.warning != ""
                       text session.job.warning font="-exact-footnote" color="-exact-secondary-label" testId="result-warning"
-                    button press=export buttonStyle="filled" disabled=(playerReadyKey != mixKey or pending(changed) or pending(exported)) testId="export"
+                    button press=export buttonStyle="bordered-prominent" disabled=(playerReadyKey != mixKey or pending(changed) or pending(exported)) testId="export"
                       text (pending(exported) ? "Preparing export…" : exportPreparedForMix ? "Save WAV…" : "Prepare WAV")
                     if exportError != ""
                       text exportError color="-exact-system-red" role="alert"

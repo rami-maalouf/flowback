@@ -120,13 +120,25 @@ const sources: Sources = {
       : { ...session, vocal_id: uploaded.id, vocal_name: uploaded.name, vocal_duration: uploaded.duration };
     await save(storage, { ...next, job_id: '' }, draftPath);
   }),
+  importYoutubeAudio: ([url], _store, storage) => attempt(async () => {
+    const uploaded = await (await request('/imports/youtube', post({ url }))).json();
+    const draft = await read(storage, draftPath);
+    await save(storage, { ...draft, song_id: uploaded.id, song_name: uploaded.name,
+      song_duration: uploaded.duration }, draftPath);
+  }),
   createCover: ([title], _store, storage) => attempt(async () => {
     const session = await read(storage, draftPath);
-    const name = title.trim() || session.song_name;
+    const name = title.trim() || session.song_name.slice(0, 160);
     if (name.length > 160) throw new Error('Keep the song name within 160 characters.');
     const job = await (await request('/jobs', post({ song_id: session.song_id, vocal_id: session.vocal_id, title: name }))).json();
     await save(storage, { ...session, title: name, job_id: job.id });
     await save(storage, empty, draftPath);
+  }),
+  retryCover: (_args, _store, storage) => attempt(async () => {
+    const session = await read(storage);
+    const job = await (await request('/jobs', post({ song_id: session.song_id,
+      vocal_id: session.vocal_id, title: session.title.slice(0, 160) }))).json();
+    await save(storage, { ...session, job_id: job.id });
   }),
   chooseMatch: ([candidate_id], _store, storage) => attempt(async () => {
     const session = await read(storage);

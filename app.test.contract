@@ -22,4 +22,20 @@ test "adding a song has its own form and returns to the library"
   tap "add-song"
   clock settle
   expect state title == "Dots & Lines"
+  reload
+  clock data
+  expect state title == "Dots & Lines"
   expect tree missing "result"
+
+test "a bad youtube link keeps the form available"
+  size 390x844
+  clock data
+  tap "add-song"
+  clock settle
+  tap "source-youtube"
+  type "youtube-url" "https://example.com/music"
+  tap "import-youtube"
+  clock data
+  expect text "action-error" == "Paste a link to a single YouTube video, or choose an audio file."
+  expect tree has "vocal-card"
+  expect tree missing "cover-detail"

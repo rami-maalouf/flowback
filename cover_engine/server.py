@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import youtube
 from .live import STUDIO, LiveMixer
 
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
@@ -39,6 +41,11 @@ class JobInput(BaseModel):
     song_id: str = Field(min_length=1, max_length=64)
     vocal_id: str = Field(min_length=1, max_length=64)
     title: str = Field(default="", max_length=160)
+
+
+class YoutubeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(min_length=1, max_length=2048)
 
 
 class ChoiceInput(BaseModel):
@@ -596,6 +603,29 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None):
         finally:
             if not complete:
                 path.unlink(missing_ok=True)
+
+    @app.post("/imports/youtube", status_code=201)
+    async def import_youtube(body: YoutubeInput):
+        youtube.video_url(body.url)
+
+        def run():
+            with TemporaryDirectory(prefix="youtube-", dir=root / "uploads") as temporary:
+                audio, title, url = youtube.download(body.url, Path(temporary), MAX_UPLOAD_BYTES)
+                duration = _validate_audio(audio)
+                upload_id = uuid4().hex
+                path = root / "uploads" / f"{upload_id}.audio"
+                metadata = {"id": upload_id, "name": title, "duration": duration, "source_url": url}
+                audio.replace(path)
+                try:
+                    with app.state.store.lock:
+                        _write_json(path.with_suffix(".json"), metadata)
+                        app.state.store.uploads[upload_id] = metadata
+                except Exception:
+                    path.unlink(missing_ok=True)
+                    raise
+                return metadata
+
+        return await asyncio.to_thread(run)
 
     @app.post("/jobs", status_code=202)
     async def create_job(body: JobInput):
