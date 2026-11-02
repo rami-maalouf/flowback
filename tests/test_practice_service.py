@@ -394,13 +394,17 @@ def test_delete_and_restore_song_keep_every_take_and_unrelated_song_across_resta
         assert client.get(f"/songs/{song['id']}/takes").status_code == 410
         assert client.get(f"/jobs/{first}/session").status_code == 410
         assert client.get(f"/jobs/{second}/session").status_code == 410
-        assert client.post(
-            f"/songs/{song['id']}/takes",
-            json={"vocal_id": vocal["id"], "request_id": "second"},
-        ).status_code == 410
-        assert client.post(
-            "/jobs", json={"song_id": song["id"], "vocal_id": vocal["id"]}
-        ).status_code == 410
+        assert (
+            client.post(
+                f"/songs/{song['id']}/takes",
+                json={"vocal_id": vocal["id"], "request_id": "second"},
+            ).status_code
+            == 410
+        )
+        assert (
+            client.post("/jobs", json={"song_id": song["id"], "vocal_id": vocal["id"]}).status_code
+            == 410
+        )
         assert all((tmp_path / path).read_bytes() == data for path, data in files_before.items())
     with client_for(tmp_path, FakeAssessor()) as client:
         assert [row["id"] for row in client.get("/songs").json()["songs"]] == [other["id"]]

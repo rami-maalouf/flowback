@@ -1,0 +1,11 @@
+main { gap: 20px; }
+section { min-width: 0; display: grid; gap: 12px; }
+section + section { border-top: 1px solid var(--line); padding-top: 20px; }
+.stem-heading { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
+.stem-badge { color: var(--accent); background: var(--surface); padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+audio { display: block; width: 100%; min-width: 0; height: 44px; border-radius: 24px; }
+audio:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.stem-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 20px; }
+.stem-feedback p { flex: 1 1 120px; }
+.stem-feedback button { font-size: 12px; min-height: 32px; }
+section[data-error="true"] p { color: light-dark(#b42318, #ffb4ab); }

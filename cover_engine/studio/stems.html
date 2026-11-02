@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Extracted tracks</title>
+  <link rel="stylesheet" href="player.css">
+  <link rel="stylesheet" href="stems.css">
+</head>
+<body>
+  <main aria-label="Extracted tracks">
+    <section aria-labelledby="instrumental-title">
+      <div class="stem-heading"><h2 id="instrumental-title">Instrumental</h2><span class="stem-badge">Backing track</span></div>
+      <audio id="instrumental" controls preload="metadata" controlslist="nodownload" aria-label="Play instrumental"></audio>
+      <div class="stem-feedback"><p id="instrumental-status" role="status">Loading audio…</p><button id="instrumental-retry" hidden>Retry instrumental</button></div>
+    </section>
+    <section aria-labelledby="vocals-title">
+      <div class="stem-heading"><h2 id="vocals-title">Original vocals</h2></div>
+      <audio id="vocals" controls preload="metadata" controlslist="nodownload" aria-label="Play original vocals"></audio>
+      <div class="stem-feedback"><p id="vocals-status" role="status">Loading audio…</p><button id="vocals-retry" hidden>Retry vocals</button></div>
+    </section>
+  </main>
+  <script type="module" src="stems.js"></script>
+</body>
+</html>

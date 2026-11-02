@@ -1,20 +1,25 @@
 # engine and client boundary
 
-The app imports an original song and a performance of its original lyrics. There is no recording, voice synthesis, or new-lyrics mode. It exports only the matched section. An ambiguous match requires a choice before rendering.
+The app can extract a full song into instrumental and vocal tracks without a vocal performance. Covers optionally add a performance of the original lyrics. There is no recording, voice synthesis, or new-lyrics mode. It exports only the matched section. An ambiguous match requires a choice before rendering.
 
 The local development service binds to 127.0.0.1:8891. Browser origins on localhost or 127.0.0.1 are permitted; other origins and hostnames are refused. No public deployment is configured. Files stay on this machine; model weights may download on first use.
 
 ## http interface
 
-- `GET /health`: `{ "ok": true, "models_available": bool, "message": string }`.
+- `GET /health`: `{ "ok": true, "models_available": bool, "separation_available": bool, "message": string }`.
 - `POST /uploads`: raw audio bytes, `X-File-Name` with percent-encoded original filename. Returns `{ "id": string, "name": string, "duration": number }`. Validate by decoding with ffmpeg; accept at most 64 MiB to match Exact's file transport. Store under a generated id, never an input filename.
 - `POST /imports/youtube`: `{ "url": string }`. Accept only single YouTube video URLs, canonicalized before download. Return upload metadata plus `source_url`. Download audio with yt-dlp, ignore external configuration, refuse playlists/live streams/videos over 20 minutes, cap files at 64 MiB and the downloader at 120 seconds. Validate with ffmpeg before publishing. Temporary files are cleaned on success or failure.
+- `POST /extractions`: `{ "song_id": string, "title"?: string }`. Extract a previously uploaded original into full-length instrumental and vocal WAVs. No vocal upload, transcription, matching, or cover is required. Returns an extraction immediately with HTTP 202. Requests for the same uploaded song return its existing extraction; the first title is retained. Extraction uses the same serial worker as cover jobs.
+- `GET /extractions`: `{ "extractions": [...] }`, newest first, independent of the cover library.
+- `GET /extractions/{id}`: saved extraction with `id`, `song_id`, `title`, `song_name`, `duration`, `created_at`, `phase`, `message`, and `error`. Phases are `queued`, `separating`, `ready`, or `failed`. Duration is seconds and `created_at` is a Unix timestamp.
+- `POST /extractions/{id}/retry`: retry a failed extraction in place (202); other phases return 409. Interrupted extractions and missing/invalid saved tracks become retryable failures after restart.
+- `GET /extractions/{id}/audio/{instrumental|vocals}.wav`: full-length extracted audio for playback or download, supporting byte ranges. Only ready extractions expose audio. Unknown kinds return 404; incomplete extraction returns 409.
 - `POST /jobs`: `{ "song_id": string, "vocal_id": string, "title"?: string, "take_name"?: string }`. Optional names are trimmed and limited to 160 characters; unnamed songs/takes use their source filenames. Returns a job snapshot immediately. A serial background worker calls analysis. If the top candidate has coverage >= 0.75 and score exceeds the second candidate by >= 0.12, render it automatically. Otherwise wait for selection. Analysis may reject insufficient evidence instead of manufacturing a match.
 - `GET /jobs`: saved covers, newest first, with title, source names, status, section times, and creation timestamp. Older jobs are migrated automatically.
 - `GET /jobs/{id}/session`: saved title and `take_name`, source identifiers and metadata plus the job snapshot, for reopening an existing cover without processing it again.
 - `GET /songs`: `{songs:[...]}`. Group jobs by immutable original upload ID, with `id`, `title`, `song_name`, `created_at`, `take_count`, `latest_take_id`, `phase`, `duration`, `start`, `end`, and `vocal_name`. Identical filenames do not merge distinct imports.
 - `GET /songs/{song_id}/takes?selected={job_id}&sort={newest|lyrics|timing|pace|pitch|range}`: song identity/title and takes with names, sections, snapshots' status, comparability, and current assessment. Metric sorting requires the current method and at least 80% overlap of both selected sections; unavailable results are last. Pace ranks by distance from 100%, range by difference from reference, lyrics descending, timing/pitch difference ascending.
-- `POST /songs/{song_id}/takes`: `{vocal_id:string,name?:string,request_id?:string}`. Reuse the original and song title, create an independent job, and return its unchanged snapshot shape. An optional request ID (1-64 characters) makes retries return the same take, including after restart. IDs are scoped to a song; reusing one for a different vocal returns 409. Omitting it allows intentional duplicate takes. The app uses the uploaded recording ID, so uploading another recording starts a new take.
+- `POST /songs/{song_id}/takes`: `{vocal_id:string,name?:string,request_id?:string}`. Reuse the original and song title (including a ready extraction with no covers yet), create an independent job, and return its unchanged snapshot shape. An optional request ID (1-64 characters) makes retries return the same take, including after restart. IDs are scoped to a song; reusing one for a different vocal returns 409. Omitting it allows intentional duplicate takes. The app uses the uploaded recording ID, so uploading another recording starts a new take.
 - `GET /jobs/{id}/assessment`: current selected section's assessment envelope. Status is `not_started`, `queued`, `running`, `ready`, or `failed`.
 - `POST /jobs/{id}/assessment`: queue or retry analysis for a ready take. Analysis runs on its own worker; failures never change the cover's playback state. Newly rendered covers queue automatically; legacy covers can be analyzed on demand.
 - `GET /jobs/{id}/practice-audio/{performance|reference}.wav`: bounded raw vocal excerpts for the current ready assessment. Each starts at local zero and retains its own timing. Reject unavailable/currently changing sections with 409 and unsupported kinds with 404. Never use corrected preview stems as evidence.
@@ -36,7 +41,11 @@ A job snapshot has exactly these fields: `id`, `phase`, `message`, `error`, `can
 
 ## audio engine interface
 
-`cover_engine.pipeline.analyze(song: Path, vocal: Path, work_dir: Path, progress: Progress, *, reference_cache: Path | None = None) -> list[Candidate]`
+`cover_engine.pipeline.extract(song: Path, work_dir: Path, progress: Progress, *, stem_cache: Path | None = None)`
+
+Writes `instrumental.wav` and `vocals.wav` to the private work directory using only the separator, then removes the decoded original and the separator's intermediate files. The production queue supplies a shared stem cache keyed by source content, separator configuration, package version, and sample rate, with artifact hashes verified before reuse. Creating a cover later reuses these tracks while transcribing the original and the new performance. Transcription configuration does not invalidate separated audio. The original upload is never modified.
+
+`cover_engine.pipeline.analyze(song: Path, vocal: Path, work_dir: Path, progress: Progress, *, reference_cache: Path | None = None, stem_cache: Path | None = None) -> list[Candidate]`
 
 Writes reusable stems, normalized audio, word timestamps and candidate alignment information to its private work directory. Uses pretrained separation and transcription models. Model libraries are optional until a real job is requested; missing dependencies produce an actionable error. All durations and alignment data refer to seconds.
 
