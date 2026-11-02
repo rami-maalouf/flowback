@@ -91,6 +91,23 @@ The first command builds the web app and ships the committed `HEAD` with it. It 
 
 The services run as a `flowback` system user. Code is in `/opt/flowback`. The library and model weights are in `/var/lib/flowback/data` and `/var/lib/flowback/models`, and a deploy never changes them. To move an existing library, copy `~/.local/share/exact-cover` into `/var/lib/flowback/data` before the first deploy and make `flowback` its owner. Read the engine log with `journalctl -u flowback-engine -f` on the server.
 
+### A public address behind a password
+
+The web service can also answer on a public HTTPS address, such as `https://flowback.orbitlabs.studio`. It then asks for a password on every request. It forwards the engine's paths (`/health`, `/uploads`, `/imports`, `/extractions`, `/jobs`, `/songs` and `/studio`) to the engine, so the app, its players and the engine share one origin. It refuses requests that other sites send to the engine. The engine itself still accepts only loopback requests.
+
+1. Add the origin to `grants` in `app.ts`. The deploy builds the public site with that entry.
+2. On the server, write `FLOWBACK_ORIGIN=<origin>` to `/etc/flowback/web.env`, and one `name:hash` line per person to `/etc/flowback/web.users`, with a hash from `Bun.password.hash`. Without a password, the web service refuses to start for a public origin.
+3. Point a DNS record at the server, and route the host to the web service from your reverse proxy. [`deploy/bridge/`](deploy/bridge) has the socket units and the Traefik route for a Traefik that runs in Docker.
+4. Run `bun run deploy <ssh-host>`. It reads the origin from the server and builds the web app for it.
+
+To set a new password, type it after this command and press Return:
+
+```sh
+read -rs pw && printf %s "$pw" | bun -e 'console.log("rami:" + await Bun.password.hash(await Bun.stdin.text()))' | ssh <ssh-host> 'sudo install -m 0600 /dev/stdin /etc/flowback/web.users && sudo systemctl restart flowback-web'
+```
+
+The public build sends engine requests to the public origin, also when you open its web app through the tunnel. The Mac app keeps the local origin, so it still uses the server's engine through the tunnel.
+
 On a 4-core Ampere A1 server without a GPU, extracting a 3:39 song took about 3.5 minutes and used up to 5.2 GB of memory. A copied library reuses its saved tracks, but the first new cover of an older song separates and transcribes it again, because those caches record the model directory. YouTube often refuses downloads from data-center IP addresses ("Sign in to confirm you're not a bot"), so YouTube links can fail on a server that works on your Mac. Import an audio file instead.
 
 ## Architecture
