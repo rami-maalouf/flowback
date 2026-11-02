@@ -91,6 +91,8 @@ The first command builds the web app and ships the committed `HEAD` with it. It 
 
 The services run as a `flowback` system user. Code is in `/opt/flowback`. The library and model weights are in `/var/lib/flowback/data` and `/var/lib/flowback/models`, and a deploy never changes them. To move an existing library, copy `~/.local/share/exact-cover` into `/var/lib/flowback/data` before the first deploy and make `flowback` its owner. Read the engine log with `journalctl -u flowback-engine -f` on the server.
 
+On a 4-core Ampere A1 server without a GPU, extracting a 3:39 song took about 3.5 minutes and used up to 5.2 GB of memory. A copied library reuses its saved tracks, but the first new cover of an older song separates and transcribes it again, because those caches record the model directory. YouTube often refuses downloads from data-center IP addresses ("Sign in to confirm you're not a bot"), so YouTube links can fail on a server that works on your Mac. Import an audio file instead.
+
 ## Architecture
 
 - `app.contract`: library, add-song form, and cover detail with processing, match selection, playback, and export.
