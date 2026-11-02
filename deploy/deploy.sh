@@ -37,7 +37,8 @@ if [ ${#packages[@]} -gt 0 ]; then
 fi
 id flowback > /dev/null 2>&1 || useradd --system --home-dir /var/lib/flowback --shell /usr/sbin/nologin flowback
 install -d -o flowback -g flowback -m 0750 /var/lib/flowback /var/lib/flowback/data /var/lib/flowback/models
-install -d -m 0755 /opt/flowback /opt/flowback/app /opt/flowback/web /opt/flowback/bin
+install -d -m 0755 /opt/flowback /opt/flowback/app /opt/flowback/web /opt/flowback/bin /etc/flowback
+[ -e /etc/flowback/web.users ] || install -m 0600 /dev/null /etc/flowback/web.users
 # the web service gets its own copy: a bun installed in a home directory is hidden from services.
 install -m 0755 "$(readlink -f "$(command -v bun)")" /opt/flowback/bin/bun
 EOF

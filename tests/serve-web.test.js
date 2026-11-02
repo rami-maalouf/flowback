@@ -121,6 +121,30 @@ test('with users, every request needs the password, and wrong ones are limited p
   expect((await from('198.51.100.1', 'right horse')).status).toBe(200);
 });
 
+test('a browser polling with an old password costs one check, and checks run one at a time', async () => {
+  const users = new Map([['rami', await Bun.password.hash('right horse')]]);
+  const verify = Bun.password.verify;
+  let running = 0, most = 0, calls = 0;
+  Bun.password.verify = async (...args) => {
+    calls++; most = Math.max(most, ++running);
+    try { return await verify(...args); } finally { running--; }
+  };
+  try {
+    const handler = webHandler(root, {engine: engineOrigin, users});
+    const stale = {authorization: basic('rami', 'old horse'), 'x-forwarded-for': '198.51.100.7'};
+    const polls = await Promise.all(Array.from({length: 6}, () => get('/health', stale, handler)));
+    expect(polls.map(reply => reply.status)).toEqual([401, 401, 401, 401, 401, 401]);
+    for (let i = 0; i < 20; i++) expect((await get('/health', stale, handler)).status).toBe(401);
+    expect(calls).toBe(1);
+    const fresh = await Promise.all(['a', 'b', 'c'].map(word => get('/', {authorization: basic('rami', `wrong ${word}`)}, handler)));
+    expect(fresh.map(reply => reply.status)).toEqual([401, 401, 401]);
+    expect(most).toBe(1);
+    expect((await get('/', {authorization: basic('rami', 'right horse'), 'x-forwarded-for': '198.51.100.7'}, handler)).status).toBe(200);
+  } finally {
+    Bun.password.verify = verify;
+  }
+});
+
 test('a public origin needs a password, a users file needs hashes, and no web route may shadow the engine', async () => {
   const users = join(root, 'users');
   expect(() => config({FLOWBACK_ORIGIN: 'https://flowback.example'})).toThrow('A public origin needs a password');

@@ -8,13 +8,13 @@ After=network.target
 Type=simple
 DynamicUser=true
 EnvironmentFile=-/etc/flowback/web.env
+# deploy.sh creates web.users empty: no password, which serve-web.mjs refuses for a public origin.
 LoadCredential=users:/etc/flowback/web.users
-# the empty default when web.users is missing: no password, which serve-web.mjs refuses for a public origin.
-SetCredential=users:
 ExecStart=/opt/flowback/bin/bun /opt/flowback/app/deploy/serve-web.mjs /opt/flowback/web 8893
 Restart=on-failure
 RestartSec=5
-MemoryMax=256M
+# an upload in flight and one 64 MiB password check fit with room.
+MemoryMax=512M
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

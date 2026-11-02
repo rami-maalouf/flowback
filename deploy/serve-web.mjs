@@ -9,6 +9,7 @@ const UNSAFE_HEADERS = ['host', 'origin', 'referer', 'authorization', 'cookie', 
   'x-forwarded-port', 'x-forwarded-proto', 'x-forwarded-server', 'x-real-ip'];
 const FAILURE_LIMIT = 10;
 const FAILURE_WINDOW = 10 * 60 * 1000;
+const REJECTED_FOR = 60 * 1000;
 
 // FLOWBACK_ORIGIN is the public origin; the users file holds `name:hash` lines from Bun.password.hash.
 // a public origin without a password is refused, so the site never opens unprotected.
@@ -84,11 +85,18 @@ export function webHandler(root, {engine = 'http://127.0.0.1:8891', origin = '',
 }
 
 // http basic auth. a verified header is remembered, since the app polls every few seconds and
-// each hash check costs tens of milliseconds; each client gets FAILURE_LIMIT wrong tries per window.
+// each hash check costs tens of milliseconds. a rejected one is remembered for a while too, so a
+// browser polling with an old password costs one check; each client gets FAILURE_LIMIT new wrong
+// tries per window.
 function passwordCheck(users, now) {
   const verified = new Set();
+  const rejected = new Map();
+  const checking = new Map();
   const failures = new Map();
   const unknown = Bun.password.hash(crypto.randomUUID());
+  // an argon2 check takes 64 MiB: one at a time keeps memory bounded however many requests arrive.
+  let turn = Promise.resolve();
+  const verify = (password, hash) => (turn = turn.then(async () => Bun.password.verify(password, hash ?? await unknown)).catch(() => false));
   const ask = () => new Response('Flowback needs your password.', {status: 401, headers: {
     'www-authenticate': 'Basic realm="Flowback", charset="UTF-8"', 'cache-control': 'no-store',
   }});
@@ -98,27 +106,37 @@ function passwordCheck(users, now) {
     if (verified.has(header)) return null;
     const [scheme, encoded] = header.split(' ');
     if (scheme?.toLowerCase() !== 'basic' || !encoded) return ask();
-    // traefik appends the address it saw, so the last entry is the one a client cannot write.
-    const client = (request.headers.get('x-forwarded-for') ?? '').split(',').pop().trim() || 'direct';
-    const recent = (failures.get(client) ?? []).filter(time => now() - time < FAILURE_WINDOW);
-    if (recent.length >= FAILURE_LIMIT) {
-      return new Response('Too many wrong passwords. Try again later.', {status: 429, headers: {'retry-after': `${FAILURE_WINDOW / 1000}`}});
+    if (now() - (rejected.get(header) ?? -Infinity) < REJECTED_FOR) return ask();
+    let check = checking.get(header);
+    if (!check) {
+      // traefik appends the address it saw, so the last entry is the one a client cannot write.
+      const client = (request.headers.get('x-forwarded-for') ?? '').split(',').pop().trim() || 'direct';
+      const recent = (failures.get(client) ?? []).filter(time => now() - time < FAILURE_WINDOW);
+      if (recent.length >= FAILURE_LIMIT) {
+        return new Response('Too many wrong passwords. Try again later.', {status: 429, headers: {'retry-after': `${FAILURE_WINDOW / 1000}`}});
+      }
+      const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+      const colon = decoded.indexOf(':');
+      const hash = colon > 0 ? users.get(decoded.slice(0, colon)) : undefined;
+      check = verify(decoded.slice(colon + 1), hash).then(valid => {
+        checking.delete(header);
+        if (valid && hash !== undefined) {
+          if (verified.size >= 64) verified.clear();
+          verified.add(header);
+          failures.delete(client);
+          return true;
+        }
+        if (rejected.size >= 256) rejected.clear();
+        rejected.set(header, now());
+        failures.set(client, [...recent, now()]);
+        if (failures.size > 1000) {
+          for (const [key, times] of failures) if (now() - times.at(-1) >= FAILURE_WINDOW) failures.delete(key);
+        }
+        return false;
+      });
+      checking.set(header, check);
     }
-    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
-    const colon = decoded.indexOf(':');
-    const hash = colon > 0 ? users.get(decoded.slice(0, colon)) : undefined;
-    const valid = await Bun.password.verify(decoded.slice(colon + 1), hash ?? await unknown) && hash !== undefined;
-    if (valid) {
-      if (verified.size >= 64) verified.clear();
-      verified.add(header);
-      failures.delete(client);
-      return null;
-    }
-    failures.set(client, [...recent, now()]);
-    if (failures.size > 1000) {
-      for (const [key, times] of failures) if (now() - times.at(-1) >= FAILURE_WINDOW) failures.delete(key);
-    }
-    return ask();
+    return await check ? null : ask();
   };
 }
 
