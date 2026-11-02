@@ -22,7 +22,7 @@ const engine = Bun.serve({hostname: '127.0.0.1', port: 0, fetch: async (request)
   }
   return Response.json({
     method: request.method, path: url.pathname + url.search, host: request.headers.get('host'),
-    origin: request.headers.get('origin'), authorization: request.headers.get('authorization'),
+    origin: request.headers.get('origin'), authorization: request.headers.get('authorization'), cookie: request.headers.get('cookie'),
     range: request.headers.get('range'), body: request.body ? (await request.arrayBuffer()).byteLength : 0,
   });
 }});
@@ -73,12 +73,12 @@ test('an unchanged file revalidates with its etag, and every answer carries the 
 test('engine paths reach the engine as loopback requests, with the body, query and range', async () => {
   const reply = await serve(new Request('http://flowback.example/uploads?x=1', {
     method: 'POST', body: new Uint8Array(70_000), headers: {
-      origin: 'http://flowback.example', authorization: 'Basic abc', 'x-forwarded-for': '203.0.113.9',
+      origin: 'http://flowback.example', authorization: 'Basic abc', cookie: 'a=b', 'x-forwarded-for': '203.0.113.9',
     },
   }));
   expect(reply.status).toBe(200);
   expect(await reply.json()).toEqual({
-    method: 'POST', path: '/uploads?x=1', host: `127.0.0.1:${engine.port}`, origin: null, authorization: null,
+    method: 'POST', path: '/uploads?x=1', host: `127.0.0.1:${engine.port}`, origin: null, authorization: null, cookie: null,
     range: null, body: 70_000,
   });
   const ranged = await get('/jobs/one/mix.wav', {range: 'bytes=1-4'});
@@ -101,61 +101,129 @@ test('a stopped engine is a 502 the app can show', async () => {
   expect((await reply.json()).detail).toBe('The audio engine is not running.');
 });
 
-test('with users, every request needs the password, and wrong ones are limited per client', async () => {
-  let clock = 0;
-  const users = new Map([['rami', await Bun.password.hash('right horse')]]);
-  const handler = webHandler(root, {engine: engineOrigin, users, now: () => clock});
-  const asked = await get('/', {}, handler);
-  expect(asked.status).toBe(401);
-  expect(asked.headers.get('www-authenticate')).toBe('Basic realm="Flowback", charset="UTF-8"');
-  expect((await get('/health', {}, handler)).status).toBe(401);
-  expect((await get('/', {authorization: basic('rami', 'right horse')}, handler)).status).toBe(200);
-  expect((await get('/health', {authorization: basic('rami', 'right horse')}, handler)).status).toBe(200);
-  expect((await get('/', {authorization: basic('someone', 'right horse')}, handler)).status).toBe(401);
+// accounts: a signed-out visitor sees the landing page; the app needs a session.
+const secret = 'a session secret of more than thirty-two characters';
+const rami = await Bun.password.hash('right horse');
+const accounts = (options = {}) => webHandler(root, {engine: engineOrigin, users: new Map([['rami', rami]]), secret, ...options});
+const signIn = (handler, fields, headers = {}) => handler(new Request('http://127.0.0.1/login', {
+  method: 'POST', body: new URLSearchParams(fields), headers: {origin: 'http://127.0.0.1', ...headers},
+}));
+const session = (reply) => reply.headers.get('set-cookie').split(';')[0];
 
-  const from = (client, password) => get('/', {authorization: basic('rami', password), 'x-forwarded-for': `1.2.3.4, ${client}`}, handler);
-  for (let i = 0; i < 10; i++) expect((await from('198.51.100.1', `wrong ${i}`)).status).toBe(401);
-  expect((await from('198.51.100.1', 'wrong again')).status).toBe(429);
-  expect((await from('198.51.100.2', 'right horse')).status).toBe(200);
-  clock += 10 * 60 * 1000;
-  expect((await from('198.51.100.1', 'right horse')).status).toBe(200);
+test('signed out, a visitor gets the landing page and the sign-in page, and nothing else', async () => {
+  const handler = accounts();
+  const landing = await get('/', {}, handler);
+  expect(landing.status).toBe(200);
+  expect(await landing.text()).toContain('<a class="primary rise d5" href="/login">Log in</a>');
+  expect(landing.headers.get('content-security-policy')).toContain("default-src 'none'");
+  expect((await get('/landing/landing.css', {}, handler)).status).toBe(200);
+  expect((await get('/landing/flowback-icon.png', {}, handler)).status).toBe(200);
+  for (const path of ['/landing/index.html', '/landing/login.html', '/landing/..%2f..%2fdeploy%2fserve-web.mjs']) {
+    expect([path, (await get(path, {}, handler)).status]).toEqual([path, 404]);
+  }
+  const page = await get('/cover?take=2', {}, handler);
+  expect([page.status, page.headers.get('location')]).toEqual([303, '/login?next=%2Fcover%3Ftake%3D2']);
+  expect((await get('/app.js', {}, handler)).headers.get('location')).toBe('/login?next=%2Fapp.js');
+  const engineReply = await get('/songs', {}, handler);
+  expect([engineReply.status, (await engineReply.json()).detail]).toEqual([401, 'You are signed out. Reload the page to log in again.']);
+  expect((await handler(new Request('http://127.0.0.1/jobs', {method: 'POST', body: '{}'}))).status).toBe(401);
+
+  const form = await get('/login?next=%2Fcover%3Ftake%3D2', {}, handler);
+  const html = await form.text();
+  expect(html).toContain('<input type="hidden" name="next" value="/cover?take=2">');
+  expect(html).not.toContain('{{');
+  expect(form.headers.get('cache-control')).toBe('no-store');
+  for (const next of ['//evil.example/x', '/\\evil.example', 'https://evil.example', '/logout', '/"><script>']) {
+    const value = (await (await get(`/login?next=${encodeURIComponent(next)}`, {}, handler)).text()).match(/name="next" value="([^"]*)"/)[1];
+    expect([next, value]).toEqual([next, next === '/"><script>' ? '/%22%3E%3Cscript%3E' : '/']);
+  }
 });
 
-test('a browser polling with an old password costs one check, and checks run one at a time', async () => {
-  const users = new Map([['rami', await Bun.password.hash('right horse')]]);
+test('signing in opens the app and the engine; a wrong password and other sites are turned away', async () => {
+  const handler = accounts();
+  const wrong = await signIn(handler, {name: 'rami', password: 'old horse', next: '/cover'});
+  expect([wrong.status, wrong.headers.get('location'), wrong.headers.get('set-cookie')]).toEqual([303, '/login?error=wrong&next=%2Fcover', null]);
+  const again = await (await get('/login?error=wrong&next=%2Fcover', {}, handler)).text();
+  expect(again).toContain('<p class="error" role="alert">That name and password do not match.</p>');
+  expect((await signIn(handler, {name: 'rami', password: 'right horse'}, {origin: 'https://evil.example'})).status).toBe(403);
+
+  const reply = await signIn(handler, {name: 'rami', password: 'right horse', next: '/cover'});
+  expect([reply.status, reply.headers.get('location')]).toEqual([303, '/cover']);
+  expect(reply.headers.get('set-cookie')).toMatch(/^flowback_session=[\w-]+\.[\w-]+; Path=\/; Max-Age=2592000; HttpOnly; SameSite=Lax$/);
+  const cookie = {cookie: session(reply)};
+  expect(await (await get('/', cookie, handler)).text()).toBe('<main>shell</main>');
+  expect(await (await get('/songs', cookie, handler)).json()).toMatchObject({path: '/songs', cookie: null});
+  expect((await get('/login', cookie, handler)).headers.get('location')).toBe('/');
+
+  const out = await get('/logout', cookie, handler);
+  expect([out.status, out.headers.get('location')]).toEqual([303, '/']);
+  expect(out.headers.get('set-cookie')).toContain('flowback_session=; Path=/; Max-Age=0');
+
+  const secure = accounts({origin: 'https://flowback.example'});
+  const signed = await signIn(secure, {name: 'rami', password: 'right horse'}, {origin: 'https://flowback.example'});
+  expect(signed.headers.get('set-cookie')).toEndWith('; Secure');
+});
+
+test('a session ends when it expires, is forged, or its account changes', async () => {
+  let clock = 0;
+  const cookie = {cookie: session(await signIn(accounts({now: () => clock}), {name: 'rami', password: 'right horse'}))};
+  const app = async (handler) => (await (await get('/', cookie, handler)).text()) === '<main>shell</main>';
+  expect(await app(accounts({now: () => clock}))).toBe(true);
+  const [body, signature] = cookie.cookie.split('.');
+  const forged = Buffer.from(JSON.stringify({...JSON.parse(Buffer.from(body.split('=')[1], 'base64url')), u: 'someone'})).toString('base64url');
+  expect(await (await get('/', {cookie: `flowback_session=${forged}.${signature}`}, accounts())).text()).toContain('href="/login"');
+  expect(await app(accounts({secret: `${secret}, changed`}))).toBe(false);
+  expect(await app(accounts({users: new Map([['rami', await Bun.password.hash('new horse')]])}))).toBe(false);
+  expect(await app(accounts({users: new Map([['someone', rami]])}))).toBe(false);
+  clock += 30 * 24 * 60 * 60 * 1000;
+  expect(await app(accounts({now: () => clock}))).toBe(false);
+});
+
+test('wrong passwords are limited per client, and checks run one at a time', async () => {
+  let clock = 0;
+  const handler = accounts({now: () => clock});
+  const from = (client, password) => signIn(handler, {name: 'rami', password}, {'x-forwarded-for': `1.2.3.4, ${client}`});
+  for (let i = 0; i < 10; i++) expect((await from('198.51.100.1', `wrong ${i}`)).headers.get('location')).toBe('/login?error=wrong');
+  expect((await from('198.51.100.1', 'right horse')).headers.get('location')).toBe('/login?error=limit');
+  expect(await (await get('/login?error=limit', {}, handler)).text()).toContain('Too many tries.');
+  expect((await from('198.51.100.2', 'right horse')).headers.get('location')).toBe('/');
+  clock += 10 * 60 * 1000;
+  expect((await from('198.51.100.1', 'right horse')).headers.get('location')).toBe('/');
+
   const verify = Bun.password.verify;
-  let running = 0, most = 0, calls = 0;
+  let running = 0, most = 0;
   Bun.password.verify = async (...args) => {
-    calls++; most = Math.max(most, ++running);
+    most = Math.max(most, ++running);
     try { return await verify(...args); } finally { running--; }
   };
   try {
-    const handler = webHandler(root, {engine: engineOrigin, users});
-    const stale = {authorization: basic('rami', 'old horse'), 'x-forwarded-for': '198.51.100.7'};
-    const polls = await Promise.all(Array.from({length: 6}, () => get('/health', stale, handler)));
-    expect(polls.map(reply => reply.status)).toEqual([401, 401, 401, 401, 401, 401]);
-    for (let i = 0; i < 20; i++) expect((await get('/health', stale, handler)).status).toBe(401);
-    expect(calls).toBe(1);
-    const fresh = await Promise.all(['a', 'b', 'c'].map(word => get('/', {authorization: basic('rami', `wrong ${word}`)}, handler)));
-    expect(fresh.map(reply => reply.status)).toEqual([401, 401, 401]);
+    const replies = await Promise.all(['a', 'b', 'c'].map(word => from(`198.51.100.${word.charCodeAt(0)}`, `wrong ${word}`)));
+    expect(replies.map(reply => reply.headers.get('location'))).toEqual(Array(3).fill('/login?error=wrong'));
     expect(most).toBe(1);
-    expect((await get('/', {authorization: basic('rami', 'right horse'), 'x-forwarded-for': '198.51.100.7'}, handler)).status).toBe(200);
   } finally {
     Bun.password.verify = verify;
   }
 });
 
-test('a public origin needs a password, a users file needs hashes, and no web route may shadow the engine', async () => {
+test('accounts need hashes and a session secret, and no web route may shadow a path the server answers', async () => {
   const users = join(root, 'users');
-  expect(() => config({FLOWBACK_ORIGIN: 'https://flowback.example'})).toThrow('A public origin needs a password');
+  const secretFile = join(root, 'secret');
+  expect(() => config({FLOWBACK_ORIGIN: 'https://flowback.example'})).toThrow('A public origin needs an account');
   writeFileSync(users, 'rami:plain-text\n');
   expect(() => config({FLOWBACK_USERS: users})).toThrow('not an argon2 or bcrypt hash');
-  writeFileSync(users, `rami:${await Bun.password.hash('x')}\n\n`);
-  expect(config({FLOWBACK_ORIGIN: 'https://flowback.example', FLOWBACK_USERS: users}).users.has('rami')).toBe(true);
-  expect(config({}).users.size).toBe(0);
+  writeFileSync(users, `rami:${rami}\n\n`);
+  expect(() => config({FLOWBACK_USERS: users})).toThrow('Accounts need a session secret');
+  writeFileSync(secretFile, 'short\n');
+  expect(() => config({FLOWBACK_USERS: users, FLOWBACK_SECRET: secretFile})).toThrow('Accounts need a session secret');
+  writeFileSync(secretFile, `${secret}\n`);
+  const loaded = config({FLOWBACK_ORIGIN: 'https://flowback.example', FLOWBACK_USERS: users, FLOWBACK_SECRET: secretFile});
+  expect([loaded.users.has('rami'), loaded.secret]).toEqual([true, secret]);
+  expect(config({})).toEqual({origin: '', users: new Map(), secret: ''});
 
-  const clashing = mkdtempSync(join(tmpdir(), 'flowback-clash-'));
-  writeFileSync(join(clashing, 'routes.json'), routes([{name: 'songs', pattern: '/songs'}]));
-  expect(() => webHandler(clashing)).toThrow('The web route /songs would go to the engine.');
-  rmSync(clashing, {recursive: true, force: true});
+  for (const pattern of ['/songs', '/login', '/landing']) {
+    const clashing = mkdtempSync(join(tmpdir(), 'flowback-clash-'));
+    writeFileSync(join(clashing, 'routes.json'), routes([{name: 'x', pattern}]));
+    expect(() => webHandler(clashing)).toThrow(`The web route ${pattern} is a path this server answers itself.`);
+    rmSync(clashing, {recursive: true, force: true});
+  }
 });

@@ -1,0 +1,201 @@
+/* the landing and sign-in pages. colors are app.tamber's tokens; the waveform is the player's (cover_engine/studio/player.css). */
+:root {
+  color-scheme: light dark;
+  --page: #F2F8F7;
+  --card: #FFFFFF;
+  --line: #D2E3E1;
+  --brand: #08777B;
+  --ink: #086B70;
+  --accent: #08777B;
+  --text: #173537;
+  --muted: #536F71;
+  --bars: #BBD8D5;
+  --glow: rgba(8, 119, 123, .11);
+  --ring: rgba(8, 119, 123, .22);
+  --error: #B3261E;
+  --error-soft: #FBEAE8;
+  --error-line: #F4D3CF;
+  --shadow: rgba(12, 36, 39, .22);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0C2427;
+    --card: #123034;
+    --line: #25484B;
+    --ink: #69DAD2;
+    --accent: #69DAD2;
+    --text: #EDF7F5;
+    --muted: #AAC5C5;
+    --bars: #386568;
+    --glow: rgba(105, 218, 210, .09);
+    --ring: rgba(105, 218, 210, .25);
+    --error: #FFB4AB;
+    /* a red tint over teal turns grey: a darker fill and a red line instead. */
+    --error-soft: rgba(0, 0, 0, .18);
+    --error-line: rgba(255, 180, 171, .4);
+    --shadow: rgba(0, 0, 0, .45);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--page); }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: 48px 24px max(48px, env(safe-area-inset-bottom));
+  color: var(--text);
+  background: radial-gradient(64rem 40rem at 50% -10rem, var(--glow), transparent 70%) var(--page);
+}
+
+main { width: 100%; max-width: 560px; text-align: center; }
+
+h1 {
+  margin: 0;
+  font-family: ui-rounded, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-weight: 700;
+  letter-spacing: -.03em;
+  text-wrap: balance;
+}
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+.mark { display: block; margin: 0 auto; }
+
+/* landing */
+
+.hero .mark { width: 112px; height: 112px; margin-bottom: 10px; }
+
+.name { margin: 0 0 30px; font-size: 15px; font-weight: 600; letter-spacing: .01em; color: var(--ink); }
+
+.hero h1 { font-size: clamp(34px, 9.2vw, 64px); line-height: 1.04; }
+
+.hero h1 span { display: block; color: var(--ink); }
+
+.lede { max-width: 27em; margin: 22px auto 0; font-size: 17px; line-height: 1.5; color: var(--muted); text-wrap: pretty; }
+
+/* the player's waveform: the played part sweeps in once, as if a song had just started. */
+.wave { position: relative; width: min(100%, 444px); aspect-ratio: 444 / 56; margin: 44px auto 40px; }
+
+.wave svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.wave .rest { fill: var(--bars); }
+
+.wave .played { fill: var(--accent); clip-path: inset(0 38% 0 0); animation: played 2.8s cubic-bezier(.22, .7, .2, 1) .55s both; }
+
+.wave .head {
+  position: absolute;
+  top: -7px;
+  bottom: -7px;
+  left: 62%;
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: head 2.8s cubic-bezier(.22, .7, .2, 1) .55s both;
+}
+
+@keyframes played { from { clip-path: inset(0 100% 0 0); } }
+
+@keyframes head { from { left: 0; } }
+
+.defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 32px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--brand);
+  color: #FFFFFF;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(12, 36, 39, .16), 0 10px 24px -10px rgba(8, 119, 123, .7);
+  transition: filter .15s, transform .15s;
+}
+
+.primary:hover { filter: brightness(1.08); }
+
+.primary:active { transform: scale(.98); }
+
+.note { margin: 16px 0 0; font-size: 13px; color: var(--muted); }
+
+/* sign-in */
+
+.card {
+  width: 100%;
+  max-width: 380px;
+  margin: 0 auto;
+  padding: 32px 28px 28px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--card);
+  box-shadow: 0 1px 2px rgba(12, 36, 39, .06), 0 28px 56px -28px var(--shadow);
+  text-align: left;
+}
+
+.card .mark { width: 64px; height: 64px; margin-bottom: 16px; }
+
+.card h1 { font-size: 26px; line-height: 1.15; text-align: center; }
+
+.sub { margin: 6px 0 26px; font-size: 14px; color: var(--muted); text-align: center; }
+
+label { display: block; margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+
+input {
+  display: block;
+  width: 100%;
+  height: 44px;
+  margin: 0 0 16px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--page);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  transition: border-color .15s, box-shadow .15s;
+}
+
+input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+
+.card .primary { width: 100%; margin-top: 8px; }
+
+.error { margin: 0 0 18px; padding: 10px 12px; border: 1px solid var(--error-line); border-radius: 10px; background: var(--error-soft); color: var(--error); font-size: 14px; line-height: 1.4; }
+
+.back { display: inline-block; margin-top: 22px; padding: 4px 6px; border-radius: 6px; font-size: 14px; font-weight: 500; color: var(--ink); text-decoration: none; }
+
+.back:hover { text-decoration: underline; }
+
+@media (max-width: 480px) {
+  .lede { font-size: 16px; }
+  .wave { margin: 36px auto 32px; }
+}
+
+/* one page load, staggered */
+
+.rise { animation: rise .7s cubic-bezier(.22, .7, .2, 1) both; }
+.d1 { animation-delay: .06s; }
+.d2 { animation-delay: .12s; }
+.d3 { animation-delay: .2s; }
+.d4 { animation-delay: .28s; }
+.d5 { animation-delay: .36s; }
+
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

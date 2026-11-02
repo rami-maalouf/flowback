@@ -91,20 +91,22 @@ The first command builds the web app and ships the committed `HEAD` with it. It 
 
 The services run as a `flowback` system user. Code is in `/opt/flowback`. The library and model weights are in `/var/lib/flowback/data` and `/var/lib/flowback/models`, and a deploy never changes them. To move an existing library, copy `~/.local/share/exact-cover` into `/var/lib/flowback/data` before the first deploy and make `flowback` its owner. Read the engine log with `journalctl -u flowback-engine -f` on the server.
 
-### A public address behind a password
+### A public address with accounts
 
-The web service can also answer on a public HTTPS address, such as `https://flowback.orbitlabs.studio`. It then asks for a password on every request. It forwards the engine's paths (`/health`, `/uploads`, `/imports`, `/extractions`, `/jobs`, `/songs` and `/studio`) to the engine, so the app, its players and the engine share one origin. It refuses requests that other sites send to the engine. The engine itself still accepts only loopback requests.
+The web service can also answer on a public HTTPS address, such as `https://flowback.orbitlabs.studio`. A signed-out visitor sees only a landing page and a sign-in page, from [`landing/`](landing). Every other page leads to sign-in. After sign-in, a signed cookie keeps you logged in for 30 days, and `/logout` ends it. The web service forwards the engine's paths (`/health`, `/uploads`, `/imports`, `/extractions`, `/jobs`, `/songs` and `/studio`) to the engine for signed-in visitors, so the app, its players and the engine share one origin. It refuses requests that other sites send to the engine. The engine itself still accepts only loopback requests.
 
 1. Add the origin to `grants` in `app.ts`. The deploy builds the public site with that entry.
-2. On the server, write `FLOWBACK_ORIGIN=<origin>` to `/etc/flowback/web.env`, and one `name:hash` line per person to `/etc/flowback/web.users`, with a hash from `Bun.password.hash`. Without a password, the web service refuses to start for a public origin.
+2. On the server, write `FLOWBACK_ORIGIN=<origin>` to `/etc/flowback/web.env`, and one `name:hash` line per account to `/etc/flowback/web.users`, with a hash from `Bun.password.hash`. Without an account, the web service refuses to start for a public origin. The deploy creates `/etc/flowback/web.secret`, which signs the cookies; replacing it signs everyone out.
 3. Point a DNS record at the server, and route the host to the web service from your reverse proxy. [`deploy/bridge/`](deploy/bridge) has the socket units and the Traefik route for a Traefik that runs in Docker.
 4. Run `bun run deploy <ssh-host>`. It reads the origin from the server and builds the web app for it.
 
-To set a new password, type it after this command and press Return:
+All accounts share one library and one job queue. To add an account, type its name and password after this command (zsh):
 
 ```sh
-read -rs pw && printf %s "$pw" | bun -e 'console.log("rami:" + await Bun.password.hash(await Bun.stdin.text()))' | ssh <ssh-host> 'sudo install -m 0600 /dev/stdin /etc/flowback/web.users && sudo systemctl restart flowback-web'
+read -r "name?Name: " && read -rs "pw?Password: " && echo && printf %s "$pw" | NAME=$name bun -e 'console.log(process.env.NAME + ":" + await Bun.password.hash(await Bun.stdin.text()))' | ssh <ssh-host> 'sudo tee -a /etc/flowback/web.users > /dev/null && sudo systemctl restart flowback-web'; unset pw
 ```
+
+To change a password, delete the account's line from `/etc/flowback/web.users` first, then add it again. Removing an account or changing its password ends its sessions.
 
 The public build sends engine requests to the public origin, also when you open its web app through the tunnel. The Mac app keeps the local origin, so it still uses the server's engine through the tunnel.
 

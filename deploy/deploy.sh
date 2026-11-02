@@ -39,6 +39,7 @@ id flowback > /dev/null 2>&1 || useradd --system --home-dir /var/lib/flowback --
 install -d -o flowback -g flowback -m 0750 /var/lib/flowback /var/lib/flowback/data /var/lib/flowback/models
 install -d -m 0755 /opt/flowback /opt/flowback/app /opt/flowback/web /opt/flowback/bin /etc/flowback
 [ -e /etc/flowback/web.users ] || install -m 0600 /dev/null /etc/flowback/web.users
+[ -e /etc/flowback/web.secret ] || (umask 077 && head -c 48 /dev/urandom | base64 -w 0 > /etc/flowback/web.secret)
 # the web service gets its own copy: a bun installed in a home directory is hidden from services.
 install -m 0755 "$(readlink -f "$(command -v bun)")" /opt/flowback/bin/bun
 EOF
@@ -60,9 +61,8 @@ for attempt in $(seq 120); do
   [ "$attempt" = 120 ] && { journalctl -u flowback-engine -n 40 --no-pager; exit 1; }
   sleep 1
 done
-# 401 is the password prompt of a public site.
 for attempt in $(seq 20); do
-  case $(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8893/ 2> /dev/null) in 200 | 401) break ;; esac
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8893/ 2> /dev/null)" = 200 ] && break
   [ "$attempt" = 20 ] && { journalctl -u flowback-web -n 20 --no-pager; exit 1; }
   sleep 1
 done
