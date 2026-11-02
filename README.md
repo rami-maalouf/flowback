@@ -78,6 +78,19 @@ Pitch is unavailable when too little reliable voiced audio is detected, which ca
 
 Your audio stays on this Mac. The first processing job downloads pretrained model weights from their upstream hosts. Imports, intermediate audio, analysis, and finished exports persist under `~/.local/share/exact-cover`; model weights persist under `~/.cache/exact-cover/models`. Source files are never modified. There is no automatic cleanup yet.
 
+## Run on your own server
+
+Flowback can run on an Ubuntu server you reach over SSH, so processing happens there instead of on your Mac. The server needs sudo, uv, Bun at `/usr/local/bin/bun`, and Python 3.12. The deploy installs ffmpeg if it is missing.
+
+```sh
+bun run deploy <ssh-host>
+ssh -N -L 8891:127.0.0.1:8891 -L 8893:127.0.0.1:8893 <ssh-host>
+```
+
+The first command builds the web app and ships the committed `HEAD` with it. It refuses to run with uncommitted changes. On the server it installs the locked Python dependencies and two systemd services, `flowback-engine` and `flowback-web`. Then it waits until both answer. Both listen only on the server's loopback, and the engine has no login, so nobody can reach them from the internet. The second command opens a tunnel: while it runs, `http://127.0.0.1:8893` on your Mac is the server's web app. The Mac app also uses the server's engine while the tunnel is open. Stop a local engine before you open the tunnel, because both use port 8891.
+
+The services run as a `flowback` system user. Code is in `/opt/flowback`. The library and model weights are in `/var/lib/flowback/data` and `/var/lib/flowback/models`, and a deploy never changes them. To move an existing library, copy `~/.local/share/exact-cover` into `/var/lib/flowback/data` before the first deploy and make `flowback` its owner. Read the engine log with `journalctl -u flowback-engine -f` on the server.
+
 ## Architecture
 
 - `app.contract`: library, add-song form, and cover detail with processing, match selection, playback, and export.

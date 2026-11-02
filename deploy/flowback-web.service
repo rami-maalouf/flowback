@@ -1,0 +1,19 @@
+# installed by deploy/deploy.sh. listens on the server's loopback only: open it through an ssh tunnel.
+[Unit]
+Description=Flowback web app
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=true
+ExecStart=/usr/local/bin/bun /opt/flowback/app/deploy/serve-web.mjs /opt/flowback/web 8893
+Restart=on-failure
+RestartSec=5
+MemoryMax=256M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
