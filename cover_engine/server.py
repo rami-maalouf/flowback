@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import youtube
 from .assessments import AssessmentStore, envelope
-from .extractions import QUEUE_KIND, ExtractionStore
+from .extractions import QUEUE_KIND, WAV_FORMATS, ExtractionStore
 from .live import STUDIO, LiveMixer
 from .persistence import write_json as _write_json
 
@@ -614,7 +614,7 @@ class JobStore:
                     )
                 for name in ("mix.wav", "original.wav"):
                     info = sf.info(output_dir / name)
-                    if info.format != "WAV" or info.frames <= 0:
+                    if info.format not in WAV_FORMATS or info.frames <= 0:
                         raise ValueError("The audio engine produced an invalid export.")
                 with self.lock:
                     if self.stopping.is_set():

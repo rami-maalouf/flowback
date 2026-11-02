@@ -182,6 +182,24 @@ def test_invalid_separator_output_never_becomes_playable(tmp_path):
         assert client.get(f"/extractions/{extraction_id}/audio/instrumental.wav").status_code == 409
 
 
+def test_extensible_wav_tracks_are_valid(tmp_path):
+    # ffmpeg 6 writes 32-bit float as WAVE_FORMAT_EXTENSIBLE, which soundfile names WAVEX.
+    import numpy as np
+    import soundfile as sf
+
+    class ExtensibleEngine(ExtractEngine):
+        def extract(self, song, work_dir, progress):
+            for name in ("instrumental", "vocals"):
+                path = work_dir / f"{name}.wav"
+                sf.write(path, np.zeros((800, 2)), 8000, subtype="FLOAT", format="WAVEX")
+                assert sf.info(path).format == "WAVEX"
+
+    with client_for(tmp_path, ExtensibleEngine()) as client:
+        extraction_id = start_extraction(client, upload(client))
+        assert wait_extraction(client, extraction_id)["duration"] == pytest.approx(0.1)
+        assert client.get(f"/extractions/{extraction_id}/audio/vocals.wav").status_code == 200
+
+
 def test_extraction_health_does_not_require_transcription(tmp_path, monkeypatch):
     from cover_engine import server
 

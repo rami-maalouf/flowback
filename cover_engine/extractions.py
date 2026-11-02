@@ -16,6 +16,8 @@ from .persistence import write_json
 LOGGER = logging.getLogger(__name__)
 KINDS = ("instrumental", "vocals")
 QUEUE_KIND = object()
+# ffmpeg before 8 writes 32-bit float with the extensible header, which soundfile names WAVEX.
+WAV_FORMATS = frozenset({"WAV", "WAVEX"})
 
 
 class ExtractionStore:
@@ -115,7 +117,7 @@ class ExtractionStore:
 
     def validate(self, extraction_id):
         tracks = [sf.info(self.work_dir(extraction_id) / f"{kind}.wav") for kind in KINDS]
-        if any(info.format != "WAV" or info.frames <= 0 for info in tracks):
+        if any(info.format not in WAV_FORMATS or info.frames <= 0 for info in tracks):
             raise ValueError("The separator did not produce both valid audio tracks.")
         if abs(tracks[0].duration - tracks[1].duration) > 0.1:
             raise ValueError("The extracted tracks have different durations. Try again.")
