@@ -81,26 +81,48 @@ h1 {
 
 .lede { max-width: 27em; margin: 22px auto 0; font-size: 17px; line-height: 1.5; color: var(--muted); text-wrap: pretty; }
 
-/* the player's waveform: the played part sweeps in once, as if a song had just started. */
-.wave { position: relative; width: min(100%, 444px); aspect-ratio: 444 / 56; margin: 44px auto 40px; }
+/* the player's waveform: the played part sweeps in once, as if a song had just started, then
+   follows the pointer (wave.js). --at is the played fraction; it ends in the gap after a bar. */
+.wave {
+  --at: .6261;
+  position: relative;
+  width: min(100%, 444px);
+  aspect-ratio: 444 / 56;
+  margin: 44px auto 40px;
+  touch-action: pan-y;
+}
+
+/* a larger target than the bars themselves. */
+.wave::before { content: ""; position: absolute; inset: -24px -16px; }
 
 .wave svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 
 .wave .rest { fill: var(--bars); }
 
-.wave .played { fill: var(--accent); clip-path: inset(0 38% 0 0); animation: played 2.8s cubic-bezier(.22, .7, .2, 1) .55s both; }
+.wave .played {
+  fill: var(--accent);
+  clip-path: inset(0 calc(100% - var(--at) * 100%) 0 0);
+  transition: clip-path .6s cubic-bezier(.22, .7, .2, 1);
+  animation: played 2.8s cubic-bezier(.22, .7, .2, 1) .55s backwards;
+}
 
 .wave .head {
   position: absolute;
   top: -7px;
   bottom: -7px;
-  left: 62%;
+  left: calc(var(--at) * 100%);
   width: 3px;
   margin-left: -1.5px;
   border-radius: 2px;
   background: var(--accent);
-  animation: head 2.8s cubic-bezier(.22, .7, .2, 1) .55s both;
+  transition: left .6s cubic-bezier(.22, .7, .2, 1);
+  animation: head 2.8s cubic-bezier(.22, .7, .2, 1) .55s backwards;
 }
+
+/* the first touch ends the intro for good: putting its animation back would replay it from the start. */
+.wave.touched .played, .wave.touched .head { animation: none; }
+
+.wave.scrubbing .played, .wave.scrubbing .head { transition-duration: .09s; }
 
 @keyframes played { from { clip-path: inset(0 100% 0 0); } }
 

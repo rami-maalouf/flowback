@@ -116,6 +116,9 @@ test('signed out, a visitor gets the landing page and the sign-in page, and noth
   expect(landing.status).toBe(200);
   expect(await landing.text()).toContain('<a class="primary rise d5" href="/login">Log in</a>');
   expect(landing.headers.get('content-security-policy')).toContain("default-src 'none'");
+  expect(landing.headers.get('content-security-policy')).toContain("script-src 'self'");
+  const script = await get('/landing/wave.js', {}, handler);
+  expect([script.status, script.headers.get('content-type')]).toEqual([200, 'text/javascript;charset=utf-8']);
   expect((await get('/landing/landing.css', {}, handler)).status).toBe(200);
   expect((await get('/landing/flowback-icon.png', {}, handler)).status).toBe(200);
   for (const path of ['/landing/index.html', '/landing/login.html', '/landing/..%2f..%2fdeploy%2fserve-web.mjs']) {
@@ -133,6 +136,7 @@ test('signed out, a visitor gets the landing page and the sign-in page, and noth
   expect(html).toContain('<input type="hidden" name="next" value="/cover?take=2">');
   expect(html).not.toContain('{{');
   expect(form.headers.get('cache-control')).toBe('no-store');
+  expect(form.headers.get('content-security-policy')).not.toContain('script-src');
   for (const next of ['//evil.example/x', '/\\evil.example', 'https://evil.example', '/logout', '/"><script>']) {
     const value = (await (await get(`/login?next=${encodeURIComponent(next)}`, {}, handler)).text()).match(/name="next" value="([^"]*)"/)[1];
     expect([next, value]).toEqual([next, next === '/"><script>' ? '/%22%3E%3Cscript%3E' : '/']);

@@ -8,7 +8,7 @@ export const ENGINE_PATHS = ['health', 'uploads', 'imports', 'extractions', 'job
 // what this server answers itself: the sign-in pages and the landing page's files.
 const OWN_PATHS = ['login', 'logout', 'landing'];
 const LANDING = resolve(import.meta.dir, '../landing');
-const LANDING_FILES = ['.css', '.png'];
+const LANDING_FILES = ['.css', '.js', '.png'];
 const UNSAFE_HEADERS = ['host', 'origin', 'referer', 'authorization', 'cookie', 'accept-encoding', 'connection',
   'keep-alive', 'transfer-encoding', 'upgrade', 'forwarded', 'x-forwarded-for', 'x-forwarded-host',
   'x-forwarded-port', 'x-forwarded-proto', 'x-forwarded-server', 'x-real-ip'];
@@ -17,6 +17,8 @@ const SESSION_FOR = 30 * 24 * 60 * 60 * 1000;
 const FAILURE_LIMIT = 10;
 const FAILURE_WINDOW = 10 * 60 * 1000;
 const PAGE_POLICY = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+// the landing page runs its waveform's script; the sign-in page runs none.
+const LANDING_POLICY = `${PAGE_POLICY}; script-src 'self'`;
 
 // FLOWBACK_ORIGIN is the public origin. the users file holds `name:hash` lines from Bun.password.hash,
 // and the secret signs session cookies. a public origin without an account is refused, so the
@@ -78,7 +80,7 @@ export function webHandler(root, {engine = 'http://127.0.0.1:8891', origin = '',
     if (url.pathname === '/login') return sessions.login(request, url, user);
     if (url.pathname === '/logout') return sessions.logout();
     if (user) return answer(request, url);
-    if (url.pathname === '/' && reading) return page(send(request, join(landing, 'index.html'), 200));
+    if (url.pathname === '/' && reading) return page(send(request, join(landing, 'index.html'), 200), LANDING_POLICY);
     if (ENGINE_PATHS.includes(first)) {
       return Response.json({detail: 'You are signed out. Reload the page to log in again.'}, {status: 401});
     }
@@ -187,9 +189,9 @@ function sessionGate({users, secret, origin, landing, now}) {
   return {user, login, logout: () => redirect('/', {'set-cookie': cookie('', 0)})};
 }
 
-// a page this server writes: no scripts at all, and nothing from elsewhere.
-function page(response) {
-  response.headers.set('content-security-policy', PAGE_POLICY);
+// a page this server writes: nothing from elsewhere, and scripts only where the policy names them.
+function page(response, policy = PAGE_POLICY) {
+  response.headers.set('content-security-policy', policy);
   return response;
 }
 
