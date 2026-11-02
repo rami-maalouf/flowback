@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # deploys the committed HEAD to an ubuntu server over ssh: the engine and the web app, on its loopback only.
+# the web app is built for the server's public origin (FLOWBACK_ORIGIN in /etc/flowback/web.env), if it has one.
 # usage: bun run deploy <ssh-host>
 set -euo pipefail
 
@@ -13,7 +14,8 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 revision=$(git rev-parse --short HEAD)
 
-bun exact.mjs web-build --out dist
+origin=$(ssh "$host" "sed -n 's/^FLOWBACK_ORIGIN=//p' /etc/flowback/web.env 2> /dev/null" || true)
+EXACT_BACKEND_ORIGIN=${origin:-http://127.0.0.1:8891} bun exact.mjs web-build --out dist
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 mkdir "$stage/app"
@@ -57,9 +59,18 @@ for attempt in $(seq 120); do
   [ "$attempt" = 120 ] && { journalctl -u flowback-engine -n 40 --no-pager; exit 1; }
   sleep 1
 done
-curl -fsS -o /dev/null http://127.0.0.1:8893/
+# 401 is the password prompt of a public site.
+for attempt in $(seq 20); do
+  case $(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8893/ 2> /dev/null) in 200 | 401) break ;; esac
+  [ "$attempt" = 20 ] && { journalctl -u flowback-web -n 20 --no-pager; exit 1; }
+  sleep 1
+done
 echo "flowback $(cat REVISION) is running: $(curl -fsS http://127.0.0.1:8891/health)"
 EOF
 
-echo "open it from this machine: ssh -N -L 8891:127.0.0.1:8891 -L 8893:127.0.0.1:8893 $host"
-echo "then go to http://127.0.0.1:8893"
+if [ -n "$origin" ]; then
+  echo "open $origin"
+else
+  echo "open it from this machine: ssh -N -L 8891:127.0.0.1:8891 -L 8893:127.0.0.1:8893 $host"
+  echo "then go to http://127.0.0.1:8893"
+fi

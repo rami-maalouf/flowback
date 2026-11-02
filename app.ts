@@ -1,7 +1,11 @@
 import type { Answer, Result, Sources, Storage } from './app.contract.d.ts';
 
 export const appId = 'com.rami.exact-cover';
-export const grants = 'net.fetch http://127.0.0.1:8891\nfs.read app:/tmp/picked\nfs.read app:/data\nfs.write app:/data\nfs.read app:/tmp/output\nfs.write app:/tmp/output';
+// the bake picks the entry for `origin`, which EXACT_BACKEND_ORIGIN overrides: deploy/deploy.sh builds the public site so.
+export const grants = {
+  'http://127.0.0.1:8891': ['net.fetch http://127.0.0.1:8891', 'fs.read app:/tmp/picked', 'fs.read app:/data', 'fs.write app:/data', 'fs.read app:/tmp/output', 'fs.write app:/tmp/output'],
+  'https://flowback.orbitlabs.studio': ['net.fetch https://flowback.orbitlabs.studio', 'fs.read app:/tmp/picked', 'fs.read app:/data', 'fs.write app:/data', 'fs.read app:/tmp/output', 'fs.write app:/tmp/output'],
+};
 
 const origin = 'http://127.0.0.1:8891';
 const sessionPath = 'app:/data/session.json';

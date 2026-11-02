@@ -1,4 +1,5 @@
-# installed by deploy/deploy.sh. listens on the server's loopback only: open it through an ssh tunnel.
+# installed by deploy/deploy.sh. listens on the server's loopback only: a reverse proxy or an ssh tunnel opens it.
+# /etc/flowback/web.env may set FLOWBACK_ORIGIN, the public origin; /etc/flowback/web.users holds name:hash lines.
 [Unit]
 Description=Flowback web app
 After=network.target
@@ -6,6 +7,10 @@ After=network.target
 [Service]
 Type=simple
 DynamicUser=true
+EnvironmentFile=-/etc/flowback/web.env
+LoadCredential=users:/etc/flowback/web.users
+# the empty default when web.users is missing: no password, which serve-web.mjs refuses for a public origin.
+SetCredential=users:
 ExecStart=/opt/flowback/bin/bun /opt/flowback/app/deploy/serve-web.mjs /opt/flowback/web 8893
 Restart=on-failure
 RestartSec=5
