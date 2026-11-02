@@ -18,7 +18,13 @@ from .models import Candidate, Progress, RenderResult, Word
 
 REFERENCE_CACHE_VERSION = 1
 REFERENCE_AUDIO = ("song.wav", "reference.wav", "backing.wav")
+# a full vocal model: karaoke models keep wide, layered vocals such as sung hooks in the backing.
+SEPARATOR_MODEL = "vocals_mel_band_roformer.ckpt"
 LOGGER = logging.getLogger(__name__)
+
+
+def separator_model() -> str:
+    return os.environ.get("EXACT_COVER_SEPARATOR_MODEL", SEPARATOR_MODEL)
 
 
 def _model_directory() -> Path:
@@ -43,17 +49,22 @@ def _separate(song: Path, work_dir: Path) -> tuple[Path, Path]:
         sample_rate=SAMPLE_RATE,
         log_level=logging.WARNING,
     )
-    model_name = os.environ.get("EXACT_COVER_SEPARATOR_MODEL", "UVR_MDXNET_KARA_2.onnx")
-    separator.load_model(model_filename=model_name)
+    separator.load_model(model_filename=separator_model())
+    # vocal models name the rest of the song "Instrumental" or "Other".
     separator.separate(
-        str(song), {"Vocals": "separated-vocals", "Instrumental": "separated-instrumental"}
+        str(song),
+        {
+            "Vocals": "separated-vocals",
+            "Instrumental": "separated-instrumental",
+            "Other": "separated-instrumental",
+        },
     )
     vocals = work_dir / "separated-vocals.wav"
     instrumental = work_dir / "separated-instrumental.wav"
     if not vocals.is_file() or not instrumental.is_file():
         raise RuntimeError(
-            "The separation model did not produce Vocals and Instrumental stems. "
-            "Set EXACT_COVER_SEPARATOR_MODEL=UVR_MDXNET_KARA_2.onnx and retry."
+            "The separation model did not produce vocal and instrumental tracks. "
+            f"Unset EXACT_COVER_SEPARATOR_MODEL to use {SEPARATOR_MODEL} and retry."
         )
     return vocals, instrumental
 
@@ -109,7 +120,7 @@ def _reference_identity(song):
         "version": REFERENCE_CACHE_VERSION,
         "source": _digest(song),
         "sample_rate": SAMPLE_RATE,
-        "separator": os.environ.get("EXACT_COVER_SEPARATOR_MODEL", "UVR_MDXNET_KARA_2.onnx"),
+        "separator": separator_model(),
         "transcriber": os.environ.get("EXACT_COVER_WHISPER_MODEL", "small"),
         "device": os.environ.get("EXACT_COVER_WHISPER_DEVICE", "cpu"),
         "compute": os.environ.get("EXACT_COVER_WHISPER_COMPUTE", "int8"),

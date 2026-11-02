@@ -122,6 +122,47 @@ def test_restart_extraction_recovery_is_retryable(tmp_path, damage):
         wait_extraction(client, extraction_id)
 
 
+def test_restart_separates_tracks_from_an_older_separator_again(tmp_path, monkeypatch):
+    engine = ExtractEngine()
+    with client_for(tmp_path, engine) as client:
+        extraction_id = start_extraction(client, upload(client))
+        item = wait_extraction(client, extraction_id)
+        # the app's data module answers an exact shape, so a new field would break its reads.
+        assert set(item) == {
+            "id",
+            "song_id",
+            "title",
+            "song_name",
+            "duration",
+            "created_at",
+            "phase",
+            "message",
+            "error",
+        }
+        assert client.get("/extractions").json() == {"extractions": [item]}
+    path = tmp_path / "extractions" / extraction_id / "extraction.json"
+
+    def saved():
+        return json.loads(path.read_text())
+
+    assert saved()["separator"] == pipeline.SEPARATOR_MODEL
+    legacy = saved()
+    del legacy["separator"]
+    path.write_text(json.dumps(legacy))
+    with client_for(tmp_path, engine) as client:
+        wait_extraction(client, extraction_id)
+        assert saved()["separator"] == pipeline.SEPARATOR_MODEL
+        assert engine.extracted == 2
+    monkeypatch.setenv("EXACT_COVER_SEPARATOR_MODEL", "another-model.ckpt")
+    with client_for(tmp_path, engine) as client:
+        wait_extraction(client, extraction_id)
+        assert saved()["separator"] == "another-model.ckpt"
+        assert engine.extracted == 3
+    with client_for(tmp_path, engine) as client:
+        wait_extraction(client, extraction_id)
+        assert engine.extracted == 3
+
+
 def test_extraction_does_not_transcribe_and_cover_reuses_separated_audio(tmp_path, monkeypatch):
     import numpy as np
     import soundfile as sf

@@ -129,7 +129,7 @@ The shared boundary is documented in [API.md](API.md). The engine does not depen
 
 ## Models and dependencies
 
-The initial separator is `UVR_MDXNET_KARA_2.onnx` through [Audio Separator](https://github.com/nomadkaraoke/python-audio-separator). Transcription uses the multilingual `small` model through [Faster Whisper](https://github.com/SYSTRAN/faster-whisper). Practice pitch estimation uses the full [torchcrepe](https://github.com/maxrmorrison/torchcrepe) model with deterministic decoding and explicit evidence gates. Pitch-preserving timing uses [Pedalboard](https://github.com/spotify/pedalboard), which includes Rubber Band. The Python lock pins a compatible dependency set; `librosa<1` and `av<17` avoid incompatibilities observed during real model integration.
+The separator is the Mel-Band Roformer vocal model `vocals_mel_band_roformer.ckpt` through [Audio Separator](https://github.com/nomadkaraoke/python-audio-separator). It removes every vocal layer, including doubles, harmonies and ad-libs. The first separator, the karaoke model `UVR_MDXNET_KARA_2.onnx`, removes only the centered lead vocal: on Kid Cudi's "The Prayer" it removed the near-mono rap verses but left the wide, layered sung hooks in the instrumental. Faster full-vocal models (`Kim_Vocal_2.onnx`, `UVR-MDX-NET-Voc_FT.onnx`) removed the hooks but left the rap verses audible in the instrumental. The Roformer model removed both. Its weights are a 913 MB download on first use. On an Apple Silicon Mac it separates a 3:39 song in 30-40 seconds; on a CPU it takes about four times as long as the karaoke model. Each extraction records its separator. When the engine starts with a different separator, it separates older extractions again. Transcription uses the multilingual `small` model through [Faster Whisper](https://github.com/SYSTRAN/faster-whisper). Practice pitch estimation uses the full [torchcrepe](https://github.com/maxrmorrison/torchcrepe) model with deterministic decoding and explicit evidence gates. Pitch-preserving timing uses [Pedalboard](https://github.com/spotify/pedalboard), which includes Rubber Band. The Python lock pins a compatible dependency set; `librosa<1` and `av<17` avoid incompatibilities observed during real model integration.
 
 Optional environment settings:
 
@@ -137,7 +137,7 @@ Optional environment settings:
 | --- | --- |
 | `EXACT_COVER_DATA_DIR` | `~/.local/share/exact-cover` |
 | `EXACT_COVER_MODEL_DIR` | `~/.cache/exact-cover/models` |
-| `EXACT_COVER_SEPARATOR_MODEL` | `UVR_MDXNET_KARA_2.onnx` |
+| `EXACT_COVER_SEPARATOR_MODEL` | `vocals_mel_band_roformer.ckpt` |
 | `EXACT_COVER_WHISPER_MODEL` | `small` |
 | `EXACT_COVER_WHISPER_DEVICE` | `cpu` |
 | `EXACT_COVER_WHISPER_COMPUTE` | `int8` |

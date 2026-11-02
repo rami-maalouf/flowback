@@ -12,12 +12,20 @@ import soundfile as sf
 from fastapi import HTTPException
 
 from .persistence import write_json
+from .pipeline import separator_model
 
 LOGGER = logging.getLogger(__name__)
 KINDS = ("instrumental", "vocals")
 QUEUE_KIND = object()
+# extractions saved before the separator was recorded all used this karaoke model.
+LEGACY_SEPARATOR = "UVR_MDXNET_KARA_2.onnx"
 # ffmpeg before 8 writes 32-bit float with the extensible header, which soundfile names WAVEX.
 WAV_FORMATS = frozenset({"WAV", "WAVEX"})
+
+
+def _public(item):
+    # clients read an exact shape: an extra field fails the whole response there.
+    return {key: deepcopy(value) for key, value in item.items() if key != "separator"}
 
 
 class ExtractionStore:
@@ -51,6 +59,14 @@ class ExtractionStore:
                             message="Extracted audio is missing or damaged",
                             error="The saved tracks could not be opened. Try extracting again.",
                         )
+                    else:
+                        if item.get("separator", LEGACY_SEPARATOR) != separator_model():
+                            self.update(
+                                item["id"],
+                                phase="queued",
+                                message="Waiting to separate your song again with a better model",
+                            )
+                            store.pending.put((item["id"], QUEUE_KIND))
             except (ValueError, KeyError, OSError, TypeError):
                 LOGGER.warning("could not restore extraction: %s", path)
 
@@ -61,14 +77,17 @@ class ExtractionStore:
         with self.store.lock:
             if extraction_id not in self.items:
                 raise HTTPException(404, "This extracted song was not found.")
-            return deepcopy(self.items[extraction_id])
+            return _public(self.items[extraction_id])
 
     def library(self):
         with self.store.lock:
             return {
-                "extractions": deepcopy(
-                    sorted(self.items.values(), key=lambda item: item["created_at"], reverse=True)
-                )
+                "extractions": [
+                    _public(item)
+                    for item in sorted(
+                        self.items.values(), key=lambda item: item["created_at"], reverse=True
+                    )
+                ]
             }
 
     def update(self, extraction_id, **changes):
@@ -85,7 +104,7 @@ class ExtractionStore:
                 raise HTTPException(404, "The original song was not found. Import it again.")
             for item in self.items.values():
                 if item["song_id"] == song_id:
-                    return deepcopy(item)
+                    return _public(item)
             upload = self.store.uploads[song_id]
             extraction_id = uuid4().hex
             item = {
@@ -103,7 +122,7 @@ class ExtractionStore:
             write_json(self.root / extraction_id / "extraction.json", item)
             self.items[extraction_id] = item
             self.store.pending.put((extraction_id, QUEUE_KIND))
-            return deepcopy(item)
+            return _public(item)
 
     def retry(self, extraction_id):
         with self.store.lock:
@@ -138,6 +157,7 @@ class ExtractionStore:
         try:
             item = self.get(extraction_id)
             engine = self.store.engine or importlib.import_module("cover_engine.pipeline")
+            separator = separator_model()
             self.update(extraction_id, phase="separating", message="Separating vocals and music")
 
             def progress(phase, message):
@@ -158,6 +178,7 @@ class ExtractionStore:
                 message="Your instrumental and vocals are ready",
                 error="",
                 duration=duration,
+                separator=separator,
             )
         except Exception as error:
             LOGGER.exception("extraction failed for %s", extraction_id)
