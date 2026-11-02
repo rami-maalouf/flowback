@@ -25,7 +25,14 @@ set -euo pipefail
 for tool in uv /usr/local/bin/bun /usr/bin/python3.12; do
   command -v "$tool" > /dev/null || { echo "the server needs $tool" >&2; exit 1; }
 done
-command -v ffmpeg > /dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg
+# python3.12-dev: some locked packages, such as diffq, have no arm64 wheel and build from source.
+packages=()
+command -v ffmpeg > /dev/null || packages+=(ffmpeg)
+dpkg -s python3.12-dev > /dev/null 2>&1 || packages+=(python3.12-dev)
+command -v gcc > /dev/null || packages+=(gcc)
+if [ ${#packages[@]} -gt 0 ]; then
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${packages[@]}" > /dev/null
+fi
 id flowback > /dev/null 2>&1 || useradd --system --home-dir /var/lib/flowback --shell /usr/sbin/nologin flowback
 install -d -o flowback -g flowback -m 0750 /var/lib/flowback /var/lib/flowback/data /var/lib/flowback/models
 install -d -m 0755 /opt/flowback /opt/flowback/app /opt/flowback/web
