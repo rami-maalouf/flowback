@@ -22,7 +22,7 @@ echo "$revision" > "$stage/app/REVISION"
 
 ssh "$host" 'sudo bash -s' <<'EOF'
 set -euo pipefail
-for tool in uv /usr/local/bin/bun /usr/bin/python3.12; do
+for tool in uv bun /usr/bin/python3.12; do
   command -v "$tool" > /dev/null || { echo "the server needs $tool" >&2; exit 1; }
 done
 # python3.12-dev: some locked packages, such as diffq, have no arm64 wheel and build from source.
@@ -35,7 +35,9 @@ if [ ${#packages[@]} -gt 0 ]; then
 fi
 id flowback > /dev/null 2>&1 || useradd --system --home-dir /var/lib/flowback --shell /usr/sbin/nologin flowback
 install -d -o flowback -g flowback -m 0750 /var/lib/flowback /var/lib/flowback/data /var/lib/flowback/models
-install -d -m 0755 /opt/flowback /opt/flowback/app /opt/flowback/web
+install -d -m 0755 /opt/flowback /opt/flowback/app /opt/flowback/web /opt/flowback/bin
+# the web service gets its own copy: a bun installed in a home directory is hidden from services.
+install -m 0755 "$(readlink -f "$(command -v bun)")" /opt/flowback/bin/bun
 EOF
 
 rsync -a --delete --exclude /.venv --rsync-path='sudo rsync' "$stage/app/" "$host:/opt/flowback/app/"

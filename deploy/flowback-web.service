@@ -6,7 +6,7 @@ After=network.target
 [Service]
 Type=simple
 DynamicUser=true
-ExecStart=/usr/local/bin/bun /opt/flowback/app/deploy/serve-web.mjs /opt/flowback/web 8893
+ExecStart=/opt/flowback/bin/bun /opt/flowback/app/deploy/serve-web.mjs /opt/flowback/web 8893
 Restart=on-failure
 RestartSec=5
 MemoryMax=256M

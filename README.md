@@ -80,7 +80,7 @@ Your audio stays on this Mac. The first processing job downloads pretrained mode
 
 ## Run on your own server
 
-Flowback can run on an Ubuntu server you reach over SSH, so processing happens there instead of on your Mac. The server needs sudo, uv, Bun at `/usr/local/bin/bun`, and Python 3.12. The deploy installs ffmpeg, gcc, and the Python 3.12 headers if they are missing.
+Flowback can run on an Ubuntu server you reach over SSH, so processing happens there instead of on your Mac. The server needs sudo, uv and Bun on the `PATH` that sudo uses, and Python 3.12. The deploy installs ffmpeg, gcc, and the Python 3.12 headers if they are missing.
 
 ```sh
 bun run deploy <ssh-host>
