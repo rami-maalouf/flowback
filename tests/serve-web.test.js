@@ -153,7 +153,7 @@ test('signing in opens the app and the engine; a wrong password and other sites 
 
   const reply = await signIn(handler, {name: 'rami', password: 'right horse', next: '/cover'});
   expect([reply.status, reply.headers.get('location')]).toEqual([303, '/cover']);
-  expect(reply.headers.get('set-cookie')).toMatch(/^flowback_session=[\w-]+\.[\w-]+; Path=\/; Max-Age=2592000; HttpOnly; SameSite=Lax$/);
+  expect(reply.headers.get('set-cookie')).toMatch(/^flowback_session=[\w-]+\.[\w-]+; Path=\/; Max-Age=34560000; HttpOnly; SameSite=Lax$/);
   const cookie = {cookie: session(reply)};
   expect(await (await get('/', cookie, handler)).text()).toBe('<main>shell</main>');
   expect(await (await get('/songs', cookie, handler)).json()).toMatchObject({path: '/songs', cookie: null});
@@ -179,8 +179,26 @@ test('a session ends when it expires, is forged, or its account changes', async 
   expect(await app(accounts({secret: `${secret}, changed`}))).toBe(false);
   expect(await app(accounts({users: new Map([['rami', await Bun.password.hash('new horse')]])}))).toBe(false);
   expect(await app(accounts({users: new Map([['someone', rami]])}))).toBe(false);
-  clock += 30 * 24 * 60 * 60 * 1000;
+  clock += 400 * 24 * 60 * 60 * 1000;
   expect(await app(accounts({now: () => clock}))).toBe(false);
+});
+
+test('a session in use renews itself once a day, so it never ends while it is used', async () => {
+  const day = 24 * 60 * 60 * 1000;
+  let clock = 0;
+  const handler = accounts({now: () => clock});
+  let cookie = {cookie: session(await signIn(handler, {name: 'rami', password: 'right horse'}))};
+  clock += day / 2;
+  expect((await get('/songs', cookie, handler)).headers.get('set-cookie')).toBeNull();
+  for (let visit = 0; visit < 3; visit++) {
+    clock += 399 * day;
+    const reply = await get('/songs', cookie, handler);
+    expect(reply.status).toBe(200);
+    const renewed = reply.headers.get('set-cookie');
+    expect(renewed).toMatch(/^flowback_session=[\w-]+\.[\w-]+; Path=\/; Max-Age=34560000; HttpOnly; SameSite=Lax$/);
+    cookie = {cookie: renewed.split(';')[0]};
+  }
+  expect(await (await get('/', cookie, handler)).text()).toBe('<main>shell</main>');
 });
 
 test('wrong passwords are limited per client, and checks run one at a time', async () => {

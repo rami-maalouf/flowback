@@ -13,7 +13,9 @@ const UNSAFE_HEADERS = ['host', 'origin', 'referer', 'authorization', 'cookie', 
   'keep-alive', 'transfer-encoding', 'upgrade', 'forwarded', 'x-forwarded-for', 'x-forwarded-host',
   'x-forwarded-port', 'x-forwarded-proto', 'x-forwarded-server', 'x-real-ip'];
 const COOKIE = 'flowback_session';
-const SESSION_FOR = 30 * 24 * 60 * 60 * 1000;
+// browsers keep a cookie 400 days at most (RFC 6265bis). a day of use renews it, so a session lasts while it is used.
+const SESSION_FOR = 400 * 24 * 60 * 60 * 1000;
+const RENEW_AFTER = 24 * 60 * 60 * 1000;
 const FAILURE_LIMIT = 10;
 const FAILURE_WINDOW = 10 * 60 * 1000;
 const PAGE_POLICY = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -76,10 +78,14 @@ export function webHandler(root, {engine = 'http://127.0.0.1:8891', origin = '',
       const file = within(landing, url.pathname.slice('/landing'.length));
       return reading && file && LANDING_FILES.includes(extname(file)) && isFile(file) ? send(request, file, 200) : new Response(null, {status: 404});
     }
-    const user = sessions.user(request);
-    if (url.pathname === '/login') return sessions.login(request, url, user);
+    const session = sessions.user(request);
+    if (url.pathname === '/login') return sessions.login(request, url, session);
     if (url.pathname === '/logout') return sessions.logout();
-    if (user) return answer(request, url);
+    if (session) {
+      const response = await answer(request, url);
+      if (session.renew) response.headers.append('set-cookie', sessions.issue(session.name));
+      return response;
+    }
     if (url.pathname === '/' && reading) return page(send(request, join(landing, 'index.html'), 200), LANDING_POLICY);
     if (ENGINE_PATHS.includes(first)) {
       return Response.json({detail: 'You are signed out. Reload the page to log in again.'}, {status: 401});
@@ -147,7 +153,13 @@ function sessionGate({users, secret, origin, landing, now}) {
     let session;
     try { session = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch { return null; }
     const hash = users.get(session?.u);
-    return hash && session.e > now() && session.f === fingerprint(hash) ? session.u : null;
+    if (!hash || session.e <= now() || session.f !== fingerprint(hash)) return null;
+    return {name: session.u, renew: session.e - now() < SESSION_FOR - RENEW_AFTER};
+  }
+
+  function issue(name) {
+    const body = Buffer.from(JSON.stringify({u: name, f: fingerprint(users.get(name)), e: now() + SESSION_FOR})).toString('base64url');
+    return cookie(`${body}.${sign(body)}`, SESSION_FOR / 1000);
   }
 
   async function login(request, url, signedIn) {
@@ -182,11 +194,10 @@ function sessionGate({users, secret, origin, landing, now}) {
       return again('wrong');
     }
     failures.delete(client);
-    const body = Buffer.from(JSON.stringify({u: name, f: fingerprint(hash), e: now() + SESSION_FOR})).toString('base64url');
-    return redirect(next, {'set-cookie': cookie(`${body}.${sign(body)}`, SESSION_FOR / 1000)});
+    return redirect(next, {'set-cookie': issue(name)});
   }
 
-  return {user, login, logout: () => redirect('/', {'set-cookie': cookie('', 0)})};
+  return {user, issue, login, logout: () => redirect('/', {'set-cookie': cookie('', 0)})};
 }
 
 // a page this server writes: nothing from elsewhere, and scripts only where the policy names them.
