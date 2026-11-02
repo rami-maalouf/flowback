@@ -59,6 +59,16 @@ test('the mixer scrolls its outer container with pixel, line and page wheel unit
   ]);
 });
 
+test('the instrumentals mixer scrolls the page only for its own extraction', () => {
+  const extraction = 'a'.repeat(32);
+  const {frame, moves, send} = host();
+  frame.src = `https://engine.test/studio/stems.html?extraction=${extraction}&embedded=1`;
+  send(`flowback-stems:${extraction}:scroll:0:30`);
+  send(`flowback-stems:${'b'.repeat(32)}:scroll:0:30`);
+  send('flowback-live:take-1:3:scroll:0:30');
+  expect(moves).toEqual([{top: 30, behavior: 'instant'}]);
+});
+
 test('only the current embedded iframe source, origin and take can scroll the page', () => {
   const {window, frame, moves, send} = host();
   send(undefined, {source: window});

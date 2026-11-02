@@ -76,10 +76,13 @@ class MixInput(BaseModel):
     backing_volume: float = Field(default=100, ge=0, le=200, allow_inf_nan=False, strict=True)
 
 
-class LevelsInput(MixInput):
-    revision: int = Field(ge=1, strict=True)
+class ExtractionLevelsInput(MixInput):
     client_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
     sequence: int = Field(ge=1, strict=True)
+
+
+class LevelsInput(ExtractionLevelsInput):
+    revision: int = Field(ge=1, strict=True)
 
 
 class ExportInput(MixInput):
@@ -899,6 +902,28 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None, assessor=N
     def retry_extraction(extraction_id: str):
         return app.state.store.extractions.retry(extraction_id)
 
+    @app.get("/extractions/{extraction_id}/player")
+    async def extraction_player(extraction_id: str):
+        try:
+            return await asyncio.to_thread(app.state.store.extractions.player, extraction_id)
+        except (ValueError, OSError, sf.LibsndfileError) as error:
+            LOGGER.exception("could not prepare the extraction player")
+            raise HTTPException(
+                422, "Could not load the tracks. Retry or extract the song again."
+            ) from error
+
+    @app.get("/extractions/{extraction_id}/player/{kind}.flac")
+    def extraction_player_track(extraction_id: str, kind: str):
+        path = app.state.store.extractions.player_track(extraction_id, kind)
+        return FileResponse(path, media_type="audio/flac")
+
+    @app.post("/extractions/{extraction_id}/levels")
+    def save_extraction_levels(extraction_id: str, body: ExtractionLevelsInput):
+        try:
+            return app.state.store.extractions.save_levels(extraction_id, **body.model_dump())
+        except OSError as error:
+            raise HTTPException(503, "Could not save the mix levels. Retry saving.") from error
+
     @app.get("/extractions/{extraction_id}/audio/{kind}.wav")
     def extraction_audio(extraction_id: str, kind: str):
         path = app.state.store.extractions.audio(extraction_id, kind)
@@ -1007,7 +1032,6 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None, assessor=N
             "index.html",
             "stems.html",
             "stems.js",
-            "stems.css",
             "player.js",
             "player.css",
             "mixer.js",

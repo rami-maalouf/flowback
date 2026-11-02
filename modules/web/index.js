@@ -13,7 +13,10 @@ export function element(handle) {
     if (!frame.isConnected || event.source !== frame.contentWindow || typeof event.data !== 'string') return;
     const url = new URL(frame.src, document.baseURI);
     if (event.origin !== url.origin || url.searchParams.get('embedded') !== '1') return;
-    const prefix = `flowback-live:${url.searchParams.get('job')}:${Number(url.searchParams.get('revision'))}:scroll:`;
+    const params = url.searchParams;
+    const prefix = params.has('extraction')
+      ? `flowback-stems:${params.get('extraction')}:scroll:`
+      : `flowback-live:${params.get('job')}:${Number(params.get('revision'))}:scroll:`;
     if (!event.data.startsWith(prefix)) return;
     const [mode, amount, ...extra] = event.data.slice(prefix.length).split(':');
     if (extra.length || !['0', '1', '2'].includes(mode) || !amount?.trim()) return;

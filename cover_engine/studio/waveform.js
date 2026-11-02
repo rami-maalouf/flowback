@@ -18,3 +18,14 @@ export function waveform(vocal, backing, count = 120) {
   const peak = Math.max(...values);
   return values.map(value => peak ? Math.sqrt(value / peak) : 0);
 }
+
+export function drawWaveform(bars) {
+  for (const id of ['wave-bars', 'played-bars']) {
+    document.getElementById(id).replaceChildren(...bars.map((amplitude, index) => {
+      const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      const height = Math.max(2, amplitude * 48);
+      for (const [name, value] of Object.entries({x: index * 5, y: (56 - height) / 2, width: 3, height, rx: 1.5})) bar.setAttribute(name, String(value));
+      return bar;
+    }));
+  }
+}

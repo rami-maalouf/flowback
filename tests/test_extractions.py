@@ -163,6 +163,75 @@ def test_restart_separates_tracks_from_an_older_separator_again(tmp_path, monkey
         assert engine.extracted == 3
 
 
+def test_player_serves_compact_tracks_and_keeps_shared_levels(tmp_path):
+    import io
+
+    import numpy as np
+    import soundfile as sf
+
+    times = np.arange(22050) / 44100
+    tracks = {
+        "vocals": np.stack([np.sin(2 * np.pi * 220 * times)] * 2, axis=1) * 0.5,
+        "instrumental": np.stack([np.sin(2 * np.pi * 55 * times)] * 2, axis=1) * 0.8,
+    }
+
+    class ToneEngine(ExtractEngine):
+        def extract(self, song, work_dir, progress):
+            self.extracted += 1
+            for name, audio in tracks.items():
+                sf.write(work_dir / f"{name}.wav", audio, 44100, subtype="FLOAT")
+
+    engine = ToneEngine()
+    client_id = "0" * 8 + "-0000-4000-8000-" + "0" * 12
+    with client_for(tmp_path, engine) as client:
+        extraction_id = start_extraction(client, upload(client))
+        item = wait_extraction(client, extraction_id)
+        base = f"/extractions/{extraction_id}"
+        assert client.get(f"{base}/player/vocals.flac").status_code == 404
+        player = client.get(f"{base}/player").json()
+        assert player == {
+            "duration": pytest.approx(0.5),
+            "vocals_url": f"{base}/player/vocals.flac",
+            "instrumental_url": f"{base}/player/instrumental.flac",
+            "vocal_volume": 100,
+            "backing_volume": 100,
+            "levels_saved": False,
+        }
+        for name, audio in tracks.items():
+            response = client.get(player[f"{name}_url"])
+            assert response.headers["content-type"] == "audio/flac"
+            decoded, rate = sf.read(io.BytesIO(response.content), always_2d=True)
+            assert rate == 44100
+            assert np.abs(decoded - audio).max() < 1 / 16384
+        assert client.get(f"{base}/player/mix.flac").status_code == 404
+
+        def save(sequence, vocal, backing):
+            body = {
+                "vocal_volume": vocal,
+                "backing_volume": backing,
+                "client_id": client_id,
+                "sequence": sequence,
+            }
+            response = client.post(f"{base}/levels", json=body)
+            assert response.status_code == 200, response.text
+
+        save(2, 0, 150)
+        save(1, 80, 80)
+        assert client.post(f"{base}/levels", json={"vocal_volume": 250}).status_code == 422
+        levels = {"vocal_volume": 0, "backing_volume": 150, "levels_saved": True}
+        assert client.get(f"{base}/player").json().items() >= levels.items()
+        assert client.get(base).json() == item
+    path = tmp_path / "extractions" / extraction_id / "extraction.json"
+    saved = json.loads(path.read_text())
+    del saved["separator"]
+    path.write_text(json.dumps(saved))
+    with client_for(tmp_path, engine) as client:
+        wait_extraction(client, extraction_id)
+        assert engine.extracted == 2
+        assert not (tmp_path / "extractions" / extraction_id / "work" / "player").exists()
+        assert client.get(f"{base}/player").json().items() >= levels.items()
+
+
 def test_extraction_does_not_transcribe_and_cover_reuses_separated_audio(tmp_path, monkeypatch):
     import numpy as np
     import soundfile as sf

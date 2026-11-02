@@ -756,7 +756,7 @@ component ExactCover
                         text "Reconnect"
                 if extraction.phase == "ready" and top(nav).name == "instrumental"
                   column padding=20 gap=16 border-radius=14 background-color="surface.card" border-width=1 border-style="solid" border-color="border.hairline"
-                    iframe src=`${session.studio_origin}/studio/stems.html?extraction=${extraction.id}` message=stemMessage aria-label="Extracted instrumental and vocal player" width="100%" height=stemHeight border-width=0 hatch="mixer-scroll" testId="stem-player"
+                    iframe src=`${session.studio_origin}/studio/stems.html?extraction=${extraction.id}&embedded=1` message=stemMessage aria-label="Instrumental and vocal mixer" width="100%" height=stemHeight border-width=0 hatch="mixer-scroll" testId="stem-player"
                   column gap=12
                     text "Save your tracks" font-weight=600
                     row gap=12 flex-wrap="wrap"
