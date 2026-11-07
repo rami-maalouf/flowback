@@ -572,7 +572,12 @@ component ExactCover
                   image "assets/flowback-icon.png" width=64 height=64 flex-shrink=0 aria-hidden=true
                   column gap=6 flex=1 min-width=0
                     text "Your songs" role="heading" aria-level=2 font-size="1.75rem" font-weight=650
-                    text `${library.covers.length} ${library.covers.length == 1 ? "song" : "songs"} · Saved on this Mac` font="-exact-subheadline" color="text.secondary"
+                    if library.error != ""
+                      text "Library unavailable · Saved on this Mac" font="-exact-subheadline" color="text.secondary"
+                    else if pending(library) and library.covers.length == 0
+                      text "Opening your library…" font="-exact-subheadline" color="text.secondary"
+                    else
+                      text `${library.covers.length} ${library.covers.length == 1 ? "song" : "songs"} · Saved on this Mac` font="-exact-subheadline" color="text.secondary"
                 if library.error != ""
                   column padding=20 gap=10 border-radius=12 background-color="surface.card" testId="library-error"
                     text "Can’t connect to your library" font-weight=600

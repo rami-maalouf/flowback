@@ -21,6 +21,7 @@
       ]
     },
     "macos": {
+      "resources": [{"from": "engine-runtime", "to": "Resources/engine"}],
       "minimumOS": "14.0",
       "window": {
         "width": 900,

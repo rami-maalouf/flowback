@@ -9,6 +9,30 @@ final class FlowbackModule: ExactModule {
     #if os(macOS)
     private var mixerScrolls: [ObjectIdentifier: MixerScrollRelay] = [:]
 
+    required init(context: ExactModuleContext) {
+        super.init(context: context)
+        if !context.agent { EngineSupervisor.shared.start() }
+    }
+
+    override func call(_ request: [String: Any]) throws -> [String: Any] {
+        guard request["op"] as? String == "managesEngine" else { throw ExactNativeRefusal("unknown flowback operation") }
+        return ["managed": !context.agent]
+    }
+
+    override func later(_ request: [String: Any], reply: ExactReply) {
+        guard request["op"] as? String == "engineReady" else {
+            reply.fail("unknown flowback operation")
+            return
+        }
+        if context.agent { reply.send(["error": ""]); return }
+        EngineSupervisor.shared.whenReady { error in reply.send(["error": error]) }
+    }
+
+    override func willQuit(done: @escaping () -> Void) {
+        if !context.agent { EngineSupervisor.shared.stop() }
+        done()
+    }
+
     override func element(_ element: ExactElement) {
         guard element.hatch?.name == "mixer-scroll", let view = element.view else { return }
         let key = ObjectIdentifier(element)

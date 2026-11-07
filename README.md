@@ -37,14 +37,26 @@ These narrow-layout previews use an empty draft and synthetic test audio.
 
 ## Run
 
-Requires the sibling `../exact2` checkout, Bun, uv, and ffmpeg. Native builds also need Exact's Xcode/Rust prerequisites. The launcher installs locked Python dependencies and starts the audio service if needed.
+Building requires the sibling `../exact2` checkout, Bun, uv, and ffmpeg. Native builds also need Exact's Xcode/Rust prerequisites.
+
+The installed Mac app starts its bundled audio engine automatically. It includes Python, the locked processing dependencies, ffmpeg/ffprobe and Bun (for YouTube imports), so it does not need a terminal, Homebrew, uv, or this checkout at runtime. Heavy models load when processing needs them; downloaded weights remain in the existing model cache. Build the complete Mac app with:
+
+```sh
+bun run build:mac
+```
+
+The generated `engine-runtime/` directory is ignored by git and copied into the app before signing. Rebuild it after engine or dependency changes. Packaging preserves dependency license files and relocates native libraries into the bundle. This includes the substantial processing dependencies, but not downloaded separator or transcription weights.
+
+On launch, Flowback reuses a healthy engine at port 8891, including an SSH tunnel. It restarts its own engine after a crash with a bounded retry delay. Quitting closes its lifetime pipe: queued covers, extractions and assessments finish before shutdown. After the app disconnects, the engine exits once work has finished and no local client has made a request for 10 seconds. Reopening Flowback or keeping the web client open keeps it available. An engine started separately is never stopped by the app. Startup failures show a specific error; engine output is in `~/Library/Logs/Flowback/engine.log` (rotated on launch above 2 MiB).
+
+For development, the launcher installs locked Python dependencies and starts a separate audio service if needed:
 
 ```sh
 bun run dev:web
 bun run dev:mac
 ```
 
-The web app is served at `http://127.0.0.1:8893`. Keep the launcher terminal open while using either app. Closing a window does not stop the processing service. Ctrl+C stops a service started by that launcher. A separately started service is reused and left running.
+The web app is served at `http://127.0.0.1:8893`. The Mac development command also packages the runtime before building. Keep the launcher terminal open while using this development service. Ctrl+C stops a service started by that launcher. A separately started service is reused and left running. Opening the installed Mac app directly uses automatic engine management instead.
 
 The app opens to **Your songs**. Choose **Add song**, give it a name, then add the original and your vocal performance. Import WAV, MP3, M4A, or FLAC files up to 64 MiB each. For the original, you can also select **YouTube link** and **Import**. YouTube imports use [yt-dlp](https://github.com/yt-dlp/yt-dlp), support single public videos up to 20 minutes and 64 MiB, and fall back to file import when a video is unavailable or restricted. Provide the full original song, including its artist's vocals, and a clear recording of your own performance. Choose **Create cover**. If the words match multiple sections, select the intended section. Preview your cover or the corresponding original section, then choose **Export WAV**, followed by **Save WAV**. Output downloads use chunks, so uncompressed exports can exceed the upload limit.
 
@@ -117,6 +129,9 @@ On a 4-core Ampere A1 server without a GPU, extracting a 3:39 song takes about 1
 - `app.contract`: library, add-song form, and cover detail with processing, match selection, playback, and export.
 - `app.ts`: Exact file transport, local session persistence, and service requests.
 - `cover_engine/server.py`: local HTTP API and persistent serial job queue.
+- `cover_engine/managed.py`: app lifetime pipe, duplicate-launch lock, and idle shutdown after jobs drain.
+- `modules/apple/EngineSupervisor.swift`: native startup, health checks, crash recovery, and engine logs.
+- `tools/package-engine.mjs`: relocatable Mac processing runtime and decoder dependencies.
 - `cover_engine/youtube.py`: validated single-video imports with size and time limits.
 - `cover_engine/live.py` and `cover_engine/studio/`: cached aligned tracks, synchronized Web Audio playback, and matching WAV exports.
 - `cover_engine/pipeline.py`: model orchestration and saved analysis.
