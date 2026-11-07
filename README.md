@@ -48,6 +48,10 @@ The web app is served at `http://127.0.0.1:8893`. Keep the launcher terminal ope
 
 The app opens to **Your songs**. Choose **Add song**, give it a name, then add the original and your vocal performance. Import WAV, MP3, M4A, or FLAC files up to 64 MiB each. For the original, you can also select **YouTube link** and **Import**. YouTube imports use [yt-dlp](https://github.com/yt-dlp/yt-dlp), support single public videos up to 20 minutes and 64 MiB, and fall back to file import when a video is unavailable or restricted. Provide the full original song, including its artist's vocals, and a clear recording of your own performance. Choose **Create cover**. If the words match multiple sections, select the intended section. Preview your cover or the corresponding original section, then choose **Export WAV**, followed by **Save WAV**. Output downloads use chunks, so uncompressed exports can exceed the upload limit.
 
+Choose **Instrumentals** from the library to extract a song without recording a cover. Select **Extract song**, import the original from an audio file or a **YouTube link**, and choose **Extract instrumental & vocals**. Both full-length tracks are saved in this separate library. You can leave the screen while processing continues and reopen a saved song. It plays in one player with the cover mixer's controls: **Vocals** and **Instrumental** each go from 0% (muted) to 200% while the song plays, without restarting it. At 100% each, you hear the song as it was separated. The engine saves the levels with the song, so the Mac app and the web app open with the same mix. The player loads 16-bit FLAC copies of both tracks, about a quarter of the WAVs' size, and plays once both are loaded.
+
+Choose **Download instrumental** or **Download vocals** to prepare the WAV, then **Save instrumental WAV** or **Save vocals WAV** to choose where it goes. **Add your vocals** opens a separate take draft for that original; it is optional and leaves the extracted tracks in the Instrumentals library. Covers reuse the saved separation when its source and model settings match. Each extracted song keeps its two full-length WAV tracks and, once played, their FLAC copies; a 4:22 song takes about 230 MB, plus the shared separation cache. Extraction does not transcribe lyrics or require a vocal recording. Separation may leave audible traces of the original singer or instruments.
+
 Use **Your vocals** and **Backing track** to adjust each volume from 0% to 200% while the song plays. Changes are immediate and do not restart playback or send an audio-processing request. A small settings request saves the levels in the background. At 100%, the track uses the automatic balance; 0% mutes it. Switching to **Original** keeps your place. Moving a volume slider switches back to your cover so you hear the change.
 
 The player loads aligned tracks once and automatically saves your levels with this cover version on the Mac. Its status confirms the save or offers a retry. Unsaved changes are also kept locally for recovery. Existing covers may take a moment to prepare those tracks the first time. **Export WAV** mixes the cached tracks with your current levels; **Save WAV** saves that export. Changing a level invalidates a previously prepared WAV. Peak protection can reduce the overall output at high levels while preserving the requested balance. Exports are immutable, so preparing a new one cannot overwrite a download in progress.
@@ -74,6 +78,40 @@ Pitch is unavailable when too little reliable voiced audio is detected, which ca
 
 Your audio stays on this Mac. The first processing job downloads pretrained model weights from their upstream hosts. Imports, intermediate audio, analysis, and finished exports persist under `~/.local/share/exact-cover`; model weights persist under `~/.cache/exact-cover/models`. Source files are never modified. There is no automatic cleanup yet.
 
+## Run on your own server
+
+Flowback can run on an Ubuntu server you reach over SSH, so processing happens there instead of on your Mac. The server needs sudo, uv and Bun on the `PATH` that sudo uses, and Python 3.12. The deploy installs ffmpeg, gcc, and the Python 3.12 headers if they are missing.
+
+```sh
+bun run deploy <ssh-host>
+ssh -N -L 8891:127.0.0.1:8891 -L 8893:127.0.0.1:8893 <ssh-host>
+```
+
+The first command builds the web app and ships the committed `HEAD` with it. It refuses to run with uncommitted changes. On the server it installs the locked Python dependencies and two systemd services, `flowback-engine` and `flowback-web`. Then it waits until both answer. Both listen only on the server's loopback, and the engine has no login, so nobody can reach them from the internet. The second command opens a tunnel: while it runs, `http://127.0.0.1:8893` on your Mac is the server's web app. The Mac app also uses the server's engine while the tunnel is open. Stop a local engine before you open the tunnel, because both use port 8891.
+
+The services run as a `flowback` system user. Code is in `/opt/flowback`. The library and model weights are in `/var/lib/flowback/data` and `/var/lib/flowback/models`, and a deploy never changes them. To move an existing library, copy `~/.local/share/exact-cover` into `/var/lib/flowback/data` before the first deploy and make `flowback` its owner. Read the engine log with `journalctl -u flowback-engine -f` on the server.
+
+### A public address with accounts
+
+The web service can also answer on a public HTTPS address, such as `https://flowback.orbitlabs.studio`. A signed-out visitor sees only a landing page and a sign-in page, from [`landing/`](landing). Every other page leads to sign-in. After sign-in, a signed cookie keeps you logged in. It lasts 400 days, the longest a browser keeps a cookie, and each day you use the site renews it, so you stay logged in while you keep using it. `/logout` ends it. The web service forwards the engine's paths (`/health`, `/uploads`, `/imports`, `/extractions`, `/jobs`, `/songs` and `/studio`) to the engine for signed-in visitors, so the app, its players and the engine share one origin. It refuses requests that other sites send to the engine. The engine itself still accepts only loopback requests.
+
+1. Add the origin to `grants` in `app.ts`. The deploy builds the public site with that entry.
+2. On the server, write `FLOWBACK_ORIGIN=<origin>` to `/etc/flowback/web.env`, and one `name:hash` line per account to `/etc/flowback/web.users`, with a hash from `Bun.password.hash`. Without an account, the web service refuses to start for a public origin. The deploy creates `/etc/flowback/web.secret`, which signs the cookies; replacing it signs everyone out.
+3. Point a DNS record at the server, and route the host to the web service from your reverse proxy. [`deploy/bridge/`](deploy/bridge) has the socket units and the Traefik route for a Traefik that runs in Docker.
+4. Run `bun run deploy <ssh-host>`. It reads the origin from the server and builds the web app for it.
+
+All accounts share one library and one job queue. To add an account, type its name and password after this command (zsh):
+
+```sh
+read -r "name?Name: " && read -rs "pw?Password: " && echo && printf %s "$pw" | NAME=$name bun -e 'console.log(process.env.NAME + ":" + await Bun.password.hash(await Bun.stdin.text()))' | ssh <ssh-host> 'sudo tee -a /etc/flowback/web.users > /dev/null && sudo systemctl restart flowback-web'; unset pw
+```
+
+To change a password, delete the account's line from `/etc/flowback/web.users` first, then add it again. Removing an account or changing its password ends its sessions.
+
+The public build sends engine requests to the public origin, also when you open its web app through the tunnel. The Mac app keeps the local origin, so it still uses the server's engine through the tunnel.
+
+On a 4-core Ampere A1 server without a GPU, extracting a 3:39 song takes about 12 minutes and the engine uses up to 4.9 GB of memory. The previous karaoke model took about 3.5 minutes. A copied library reuses its saved tracks, but the first new cover of an older song separates and transcribes it again, because those caches record the model directory. YouTube often refuses downloads from data-center IP addresses ("Sign in to confirm you're not a bot"), so YouTube links can fail on a server that works on your Mac. Import an audio file instead.
+
 ## Architecture
 
 - `app.contract`: library, add-song form, and cover detail with processing, match selection, playback, and export.
@@ -91,7 +129,7 @@ The shared boundary is documented in [API.md](API.md). The engine does not depen
 
 ## Models and dependencies
 
-The initial separator is `UVR_MDXNET_KARA_2.onnx` through [Audio Separator](https://github.com/nomadkaraoke/python-audio-separator). Transcription uses the multilingual `small` model through [Faster Whisper](https://github.com/SYSTRAN/faster-whisper). Practice pitch estimation uses the full [torchcrepe](https://github.com/maxrmorrison/torchcrepe) model with deterministic decoding and explicit evidence gates. Pitch-preserving timing uses [Pedalboard](https://github.com/spotify/pedalboard), which includes Rubber Band. The Python lock pins a compatible dependency set; `librosa<1` and `av<17` avoid incompatibilities observed during real model integration.
+The separator is the Mel-Band Roformer vocal model `vocals_mel_band_roformer.ckpt` through [Audio Separator](https://github.com/nomadkaraoke/python-audio-separator). It removes every vocal layer, including doubles, harmonies and ad-libs. The first separator, the karaoke model `UVR_MDXNET_KARA_2.onnx`, removes only the centered lead vocal: on Kid Cudi's "The Prayer" it removed the near-mono rap verses but left the wide, layered sung hooks in the instrumental. Faster full-vocal models (`Kim_Vocal_2.onnx`, `UVR-MDX-NET-Voc_FT.onnx`) removed the hooks but left the rap verses audible in the instrumental. The Roformer model removed both. Its weights are a 913 MB download on first use. On an Apple Silicon Mac it separates a 3:39 song in 30-40 seconds; on a CPU it takes 3.5 to 4 times as long as the karaoke model. Each extraction records its separator. When the engine starts with a different separator, it separates older extractions again. Transcription uses the multilingual `small` model through [Faster Whisper](https://github.com/SYSTRAN/faster-whisper). Practice pitch estimation uses the full [torchcrepe](https://github.com/maxrmorrison/torchcrepe) model with deterministic decoding and explicit evidence gates. Pitch-preserving timing uses [Pedalboard](https://github.com/spotify/pedalboard), which includes Rubber Band. The Python lock pins a compatible dependency set; `librosa<1` and `av<17` avoid incompatibilities observed during real model integration.
 
 Optional environment settings:
 
@@ -99,7 +137,7 @@ Optional environment settings:
 | --- | --- |
 | `EXACT_COVER_DATA_DIR` | `~/.local/share/exact-cover` |
 | `EXACT_COVER_MODEL_DIR` | `~/.cache/exact-cover/models` |
-| `EXACT_COVER_SEPARATOR_MODEL` | `UVR_MDXNET_KARA_2.onnx` |
+| `EXACT_COVER_SEPARATOR_MODEL` | `vocals_mel_band_roformer.ckpt` |
 | `EXACT_COVER_WHISPER_MODEL` | `small` |
 | `EXACT_COVER_WHISPER_DEVICE` | `cpu` |
 | `EXACT_COVER_WHISPER_COMPUTE` | `int8` |

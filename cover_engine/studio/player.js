@@ -1,6 +1,6 @@
 import { Mixer } from './mixer.js';
 import { Autosave, restoredLevels } from './autosave.js';
-import { waveform } from './waveform.js';
+import { drawWaveform, waveform } from './waveform.js';
 import { playbackStart } from './practice.js';
 import { mountAssessment } from './assessment-view.js';
 
@@ -119,15 +119,7 @@ async function load() {
     const buffers = await Promise.all([data.vocal_url, data.backing_url, data.original_url].map(async url =>
       context.decodeAudioData(await (await request(url)).arrayBuffer())));
     if (disposed) { await context.close(); return; }
-    const bars = waveform(buffers[0], buffers[1]);
-    for (const id of ['wave-bars', 'played-bars']) {
-      $(id).replaceChildren(...bars.map((amplitude, index) => {
-        const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        const height = Math.max(2, amplitude * 48);
-        for (const [name, value] of Object.entries({x: index * 5, y: (56 - height) / 2, width: 3, height, rx: 1.5})) bar.setAttribute(name, String(value));
-        return bar;
-      }));
-    }
+    drawWaveform(waveform(buffers[0], buffers[1]));
     mixer = new Mixer(context, buffers, [data.vocal_peak, data.backing_peak]);
     originalStart = snapshot.start;
     const requestedAt = params.get('at');

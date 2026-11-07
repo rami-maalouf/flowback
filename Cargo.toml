@@ -11,6 +11,7 @@ version = "0.1.0"
 license = "MIT"
 
 [patch.crates-io]
+accesskit_windows = { path = "../exact2/vendor/accesskit-windows" }
 taffy = { path = "../exact2/vendor/taffy" }
 parley = { path = "../exact2/vendor/parley" }
 fontique = { path = "../exact2/vendor/fontique" }

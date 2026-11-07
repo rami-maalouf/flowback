@@ -1,0 +1,26 @@
+# installed by deploy/deploy.sh. listens on the server's loopback only: a reverse proxy or an ssh tunnel opens it.
+# /etc/flowback/web.env may set FLOWBACK_ORIGIN, the public origin; /etc/flowback/web.users holds name:hash lines,
+# and /etc/flowback/web.secret signs the session cookies.
+[Unit]
+Description=Flowback web app
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=true
+EnvironmentFile=-/etc/flowback/web.env
+# deploy.sh creates web.users empty (no account, which serve-web.mjs refuses for a public origin) and a random secret.
+LoadCredential=users:/etc/flowback/web.users
+LoadCredential=secret:/etc/flowback/web.secret
+ExecStart=/opt/flowback/bin/bun /opt/flowback/app/deploy/serve-web.mjs /opt/flowback/web 8893
+Restart=on-failure
+RestartSec=5
+# an upload in flight and one 64 MiB password check fit with room.
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

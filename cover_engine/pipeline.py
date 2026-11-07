@@ -18,7 +18,13 @@ from .models import Candidate, Progress, RenderResult, Word
 
 REFERENCE_CACHE_VERSION = 1
 REFERENCE_AUDIO = ("song.wav", "reference.wav", "backing.wav")
+# a full vocal model: karaoke models keep wide, layered vocals such as sung hooks in the backing.
+SEPARATOR_MODEL = "vocals_mel_band_roformer.ckpt"
 LOGGER = logging.getLogger(__name__)
+
+
+def separator_model() -> str:
+    return os.environ.get("EXACT_COVER_SEPARATOR_MODEL", SEPARATOR_MODEL)
 
 
 def _model_directory() -> Path:
@@ -43,17 +49,22 @@ def _separate(song: Path, work_dir: Path) -> tuple[Path, Path]:
         sample_rate=SAMPLE_RATE,
         log_level=logging.WARNING,
     )
-    model_name = os.environ.get("EXACT_COVER_SEPARATOR_MODEL", "UVR_MDXNET_KARA_2.onnx")
-    separator.load_model(model_filename=model_name)
+    separator.load_model(model_filename=separator_model())
+    # vocal models name the rest of the song "Instrumental" or "Other".
     separator.separate(
-        str(song), {"Vocals": "separated-vocals", "Instrumental": "separated-instrumental"}
+        str(song),
+        {
+            "Vocals": "separated-vocals",
+            "Instrumental": "separated-instrumental",
+            "Other": "separated-instrumental",
+        },
     )
     vocals = work_dir / "separated-vocals.wav"
     instrumental = work_dir / "separated-instrumental.wav"
     if not vocals.is_file() or not instrumental.is_file():
         raise RuntimeError(
-            "The separation model did not produce Vocals and Instrumental stems. "
-            "Set EXACT_COVER_SEPARATOR_MODEL=UVR_MDXNET_KARA_2.onnx and retry."
+            "The separation model did not produce vocal and instrumental tracks. "
+            f"Unset EXACT_COVER_SEPARATOR_MODEL to use {SEPARATOR_MODEL} and retry."
         )
     return vocals, instrumental
 
@@ -109,7 +120,7 @@ def _reference_identity(song):
         "version": REFERENCE_CACHE_VERSION,
         "source": _digest(song),
         "sample_rate": SAMPLE_RATE,
-        "separator": os.environ.get("EXACT_COVER_SEPARATOR_MODEL", "UVR_MDXNET_KARA_2.onnx"),
+        "separator": separator_model(),
         "transcriber": os.environ.get("EXACT_COVER_WHISPER_MODEL", "small"),
         "device": os.environ.get("EXACT_COVER_WHISPER_DEVICE", "cpu"),
         "compute": os.environ.get("EXACT_COVER_WHISPER_COMPUTE", "int8"),
@@ -175,6 +186,76 @@ def _cache_reference(directory, identity, work_dir, reference):
         LOGGER.warning("could not save reusable reference artifacts", exc_info=True)
 
 
+def _prepare_stems(song, work_dir, stem_cache=None):
+    identity = None
+    directory = None
+    if stem_cache is not None:
+        identity = _reference_identity(song)
+        for key in ("transcriber", "device", "compute"):
+            identity.pop(key)
+        identity["packages"].pop("faster-whisper")
+        key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        directory = stem_cache / key
+        try:
+            manifest = json.loads((directory / "manifest.json").read_text())
+            if manifest["identity"] == identity:
+                valid = True
+                for name in REFERENCE_AUDIO:
+                    info = sf.info(directory / name)
+                    valid = valid and (
+                        info.frames > 0
+                        and info.channels == 2
+                        and info.samplerate == SAMPLE_RATE
+                        and _digest(directory / name) == manifest["files"][name]
+                    )
+                if valid:
+                    for name in REFERENCE_AUDIO:
+                        shutil.copyfile(directory / name, work_dir / name)
+                    return
+        except (OSError, ValueError, KeyError, TypeError, sf.LibsndfileError):
+            pass
+    decode(song, work_dir / "song.wav")
+    original_vocal, instrumental = _separate(work_dir / "song.wav", work_dir)
+    decode(original_vocal, work_dir / "reference.wav")
+    decode(instrumental, work_dir / "backing.wav")
+    if directory is not None:
+        try:
+            directory.parent.mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(prefix=".preparing-", dir=directory.parent) as temporary:
+                prepared = Path(temporary) / "complete"
+                prepared.mkdir()
+                for name in REFERENCE_AUDIO:
+                    shutil.copyfile(work_dir / name, prepared / name)
+                (prepared / "manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "identity": identity,
+                            "files": {name: _digest(prepared / name) for name in REFERENCE_AUDIO},
+                        },
+                        allow_nan=False,
+                    )
+                )
+                if directory.exists():
+                    shutil.rmtree(directory)
+                prepared.replace(directory)
+        except OSError:
+            LOGGER.warning("could not save reusable separated tracks", exc_info=True)
+
+
+def extract(song: Path, work_dir: Path, progress: Progress, *, stem_cache: Path | None = None):
+    work_dir = work_dir.resolve()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    if song.resolve().parent == work_dir:
+        raise ValueError("Input files must be outside the extraction's private work directory.")
+    progress("separating", "Separating vocals and music. First use may download model weights.")
+    _prepare_stems(song, work_dir, stem_cache)
+    (work_dir / "reference.wav").replace(work_dir / "vocals.wav")
+    (work_dir / "backing.wav").replace(work_dir / "instrumental.wav")
+    # a full song's intermediates are several hundred megabytes; keep only the two tracks.
+    for name in ("song.wav", "separated-vocals.wav", "separated-instrumental.wav"):
+        (work_dir / name).unlink(missing_ok=True)
+
+
 def analyze(
     song: Path,
     vocal: Path,
@@ -182,6 +263,7 @@ def analyze(
     progress: Progress,
     *,
     reference_cache: Path | None = None,
+    stem_cache: Path | None = None,
 ) -> list[Candidate]:
     work_dir = work_dir.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -203,10 +285,7 @@ def analyze(
             cache_directory = reference_cache / cache_key
             reference = _cached_reference(cache_directory, identity, work_dir)
         if reference is None:
-            decode(song, work_dir / "song.wav")
-            original_vocal, instrumental = _separate(work_dir / "song.wav", work_dir)
-            decode(original_vocal, work_dir / "reference.wav")
-            decode(instrumental, work_dir / "backing.wav")
+            _prepare_stems(song, work_dir, stem_cache)
 
         phase = "transcribing"
         progress(

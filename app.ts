@@ -1,11 +1,16 @@
 import type { Answer, Result, Sources, Storage } from './app.contract.d.ts';
 
 export const appId = 'com.rami.exact-cover';
-export const grants = 'net.fetch http://127.0.0.1:8891\nfs.read app:/tmp/picked\nfs.read app:/data\nfs.write app:/data\nfs.read app:/tmp/output\nfs.write app:/tmp/output';
+// the bake picks the entry for `origin`, which EXACT_BACKEND_ORIGIN overrides: deploy/deploy.sh builds the public site so.
+export const grants = {
+  'http://127.0.0.1:8891': ['net.fetch http://127.0.0.1:8891', 'fs.read app:/tmp/picked', 'fs.read app:/data', 'fs.write app:/data', 'fs.read app:/tmp/output', 'fs.write app:/tmp/output'],
+  'https://flowback.orbitlabs.studio': ['net.fetch https://flowback.orbitlabs.studio', 'fs.read app:/tmp/picked', 'fs.read app:/data', 'fs.write app:/data', 'fs.read app:/tmp/output', 'fs.write app:/tmp/output'],
+};
 
 const origin = 'http://127.0.0.1:8891';
 const sessionPath = 'app:/data/session.json';
 const draftPath = 'app:/data/draft.json';
+const extractionDraftPath = 'app:/data/extraction-draft.json';
 const emptyJob: Result<'loadSession'>['job'] = {
   id: '', phase: 'idle', message: '', error: '', candidates: [], selected_id: '',
   start: 0, end: 0, duration: 0, warning: '', vocal_volume: 100, backing_volume: 100, revision: 0,
@@ -92,7 +97,83 @@ function measurementText(metric?: Measurement) {
   return `${value}${unit === '%' ? '' : ' '}${unit}`;
 }
 
+async function downloadAudio(storage: Storage, url: string, path: string) {
+    await storage.fs.mkdir('app:/tmp/output');
+    let offset = 0;
+    let total = 0;
+    do {
+      const response = await request(url, {
+        headers: { Range: `bytes=${offset}-${offset + 256 * 1024 - 1}` },
+      });
+      const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
+      if (response.status !== 206 || !range || Number(range[1]) !== offset
+        || Number(range[2]) < offset || Number(range[3]) <= Number(range[2])
+        || (total && total !== Number(range[3]))) {
+        throw new Error('The audio download was interrupted. Try exporting again.');
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.length !== Number(range[2]) - offset + 1) {
+        throw new Error('The audio download was incomplete. Try exporting again.');
+      }
+      if (offset === 0) await storage.fs.atomicWriteFile(path, bytes);
+      else await storage.fs.appendFile(path, bytes);
+      offset += bytes.length;
+      total = Number(range[3]);
+    } while (offset < total);
+}
+
+const emptyExtraction = {id: '', song_id: '', title: '', song_name: '', duration: 0,
+  created_at: 0, phase: 'idle', message: '', error: ''};
+
 const sources: Sources = {
+  loadExtractions: async () => {
+    try {
+      const {extractions} = await (await request('/extractions')).json();
+      return {extractions, error: ''};
+    } catch (error) { return {extractions: [], error: message(error)}; }
+  },
+  loadExtraction: async ([id]) => {
+    if (!id) return emptyExtraction;
+    try { return await (await request(`/extractions/${encodeURIComponent(id)}`)).json(); }
+    catch (error) { return {...emptyExtraction, id, error: message(error)}; }
+  },
+  loadExtractionDraft: async (_args, _store, storage) => {
+    try {
+      const draft = await read(storage, extractionDraftPath);
+      return {song_id: draft.song_id, song_name: draft.song_name, song_duration: draft.song_duration, error: ''};
+    } catch (error) { return {song_id: '', song_name: '', song_duration: 0, error: message(error)}; }
+  },
+  importExtractionAudio: ([path, name, size], _store, storage) => attempt(async () => {
+    if (size > 64 * 1024 * 1024) throw new Error('Choose an audio file smaller than 64 MB.');
+    const uploaded = await (await request('/uploads', {method: 'POST', headers: {'X-File-Name': encodeURIComponent(name)}, exactBodyFrom: path} as RequestInit)).json();
+    await save(storage, {...empty, song_id: uploaded.id, song_name: uploaded.name, song_duration: uploaded.duration}, extractionDraftPath);
+  }),
+  importExtractionYoutube: ([url], _store, storage) => attempt(async () => {
+    const uploaded = await (await request('/imports/youtube', post({url}))).json();
+    await save(storage, {...empty, song_id: uploaded.id, song_name: uploaded.name, song_duration: uploaded.duration}, extractionDraftPath);
+  }),
+  createExtraction: async ([title], _store, storage) => {
+    try {
+      const draft = await read(storage, extractionDraftPath);
+      const extraction = await (await request('/extractions', post({song_id: draft.song_id,
+        title: title.trim() || displayTitle('', draft.song_name).slice(0, 160)}))).json();
+      await save(storage, empty, extractionDraftPath);
+      return {...ok, id: extraction.id};
+    } catch (error) { return {ok: false, error: message(error), id: ''}; }
+  },
+  retryExtraction: ([id]) => attempt(async () => {
+    await request(`/extractions/${encodeURIComponent(id)}/retry`, post({}));
+  }),
+  openExtractionCover: ([id], _store, storage) => attempt(async () => {
+    const extraction = await (await request(`/extractions/${encodeURIComponent(id)}`)).json();
+    if (extraction.phase !== 'ready') throw new Error('Wait for the extracted tracks to finish.');
+    await save(storage, {...empty, song_id: extraction.song_id, song_name: extraction.song_name,
+      song_duration: extraction.duration, title: extraction.title});
+  }),
+  prepareStemExport: ([id, kind], _store, storage) => attempt(async () => {
+    if (kind !== 'instrumental' && kind !== 'vocals') throw new Error('Choose an instrumental or vocal track.');
+    await downloadAudio(storage, `/extractions/${encodeURIComponent(id)}/audio/${kind}.wav`, `app:/tmp/output/${kind}.wav`);
+  }),
   loadDraft: async (_args, _store, storage) => {
     const { title: ignoredTitle, job_id: ignoredJob, take_name: ignoredTake, ...files } = empty;
     try {
@@ -231,29 +312,7 @@ const sources: Sources = {
     const { download_id } = await (await request(`/jobs/${encodeURIComponent(jobId)}/export`,
       post({ revision, vocal_volume, backing_volume }))).json();
     if (!/^[a-f0-9]{32}$/.test(download_id)) throw new Error('The export was invalid. Try again.');
-    await storage.fs.mkdir('app:/tmp/output');
-    const path = 'app:/tmp/output/cover.wav';
-    let offset = 0;
-    let total = 0;
-    do {
-      const response = await request(`/jobs/${encodeURIComponent(jobId)}/downloads/${download_id}.wav`, {
-        headers: { Range: `bytes=${offset}-${offset + 256 * 1024 - 1}` },
-      });
-      const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
-      if (response.status !== 206 || !range || Number(range[1]) !== offset
-        || Number(range[2]) < offset || Number(range[3]) <= Number(range[2])
-        || (total && total !== Number(range[3]))) {
-        throw new Error('The audio download was interrupted. Try exporting again.');
-      }
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.length !== Number(range[2]) - offset + 1) {
-        throw new Error('The audio download was incomplete. Try exporting again.');
-      }
-      if (offset === 0) await storage.fs.atomicWriteFile(path, bytes);
-      else await storage.fs.appendFile(path, bytes);
-      offset += bytes.length;
-      total = Number(range[3]);
-    } while (offset < total);
+    await downloadAudio(storage, `/jobs/${encodeURIComponent(jobId)}/downloads/${download_id}.wav`, 'app:/tmp/output/cover.wav');
     await checkMix();
   }),
 };

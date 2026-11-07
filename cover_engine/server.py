@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import youtube
 from .assessments import AssessmentStore, envelope
+from .extractions import QUEUE_KIND, WAV_FORMATS, ExtractionStore
 from .live import STUDIO, LiveMixer
 from .persistence import write_json as _write_json
 
@@ -44,6 +45,12 @@ class JobInput(BaseModel):
     vocal_id: str = Field(min_length=1, max_length=64)
     title: str = Field(default="", max_length=160)
     take_name: str = Field(default="", max_length=160)
+
+
+class ExtractionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    song_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(default="", max_length=160)
 
 
 class TakeInput(BaseModel):
@@ -69,10 +76,13 @@ class MixInput(BaseModel):
     backing_volume: float = Field(default=100, ge=0, le=200, allow_inf_nan=False, strict=True)
 
 
-class LevelsInput(MixInput):
-    revision: int = Field(ge=1, strict=True)
+class ExtractionLevelsInput(MixInput):
     client_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
     sequence: int = Field(ge=1, strict=True)
+
+
+class LevelsInput(ExtractionLevelsInput):
+    revision: int = Field(ge=1, strict=True)
 
 
 class ExportInput(MixInput):
@@ -110,6 +120,7 @@ class JobStore:
         (root / "uploads").mkdir(parents=True, exist_ok=True)
         (root / "jobs").mkdir(parents=True, exist_ok=True)
         self._reload()
+        self.extractions = ExtractionStore(self)
         self.assessments = AssessmentStore(self, assessor)
         self.worker = threading.Thread(target=self._work, name="cover-engine", daemon=True)
 
@@ -309,7 +320,9 @@ class JobStore:
             if not any(job["song_id"] == song_id for job in self.jobs.values()):
                 raise HTTPException(404, "This song was not found.")
             if (song_id in self.removed_songs) != removed:
-                updated = self.removed_songs | {song_id} if removed else self.removed_songs - {song_id}
+                updated = (
+                    self.removed_songs | {song_id} if removed else self.removed_songs - {song_id}
+                )
                 _write_json(self.root / "removed-songs.json", {"song_ids": sorted(updated)})
                 self.removed_songs = updated
             return {"song_id": song_id, "removed": removed}
@@ -443,6 +456,15 @@ class JobStore:
                 default=None,
             )
             if latest is None:
+                latest = next(
+                    (
+                        item
+                        for item in self.extractions.items.values()
+                        if item["song_id"] == song_id and item["phase"] == "ready"
+                    ),
+                    None,
+                )
+            if latest is None:
                 raise HTTPException(404, "This song was not found.")
             title = latest.get("title") or self.uploads.get(song_id, {}).get(
                 "name", "Original song"
@@ -521,6 +543,9 @@ class JobStore:
             if item is None or self.stopping.is_set():
                 return
             job_id, candidate_id = item
+            if candidate_id is QUEUE_KIND:
+                self.extractions.process(job_id)
+                continue
             try:
                 engine = self.engine or importlib.import_module("cover_engine.pipeline")
 
@@ -532,7 +557,12 @@ class JobStore:
                     self.update(job_id, phase="separating", message="Preparing the original song")
                     job = self.jobs[job_id]
                     options = (
-                        {"reference_cache": self.root / "references"} if self.engine is None else {}
+                        {
+                            "reference_cache": self.root / "references",
+                            "stem_cache": self.root / "stems",
+                        }
+                        if self.engine is None
+                        else {}
                     )
                     candidates = engine.analyze(
                         self.root / "uploads" / f"{job['song_id']}.audio",
@@ -587,7 +617,7 @@ class JobStore:
                     )
                 for name in ("mix.wav", "original.wav"):
                     info = sf.info(output_dir / name)
-                    if info.format != "WAV" or info.frames <= 0:
+                    if info.format not in WAV_FORMATS or info.frames <= 0:
                         raise ValueError("The audio engine produced an invalid export.")
                 with self.lock:
                     if self.stopping.is_set():
@@ -785,7 +815,13 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None, assessor=N
             message = (
                 "Install model dependencies with uv sync --extra models before creating a cover."
             )
-        return {"ok": True, "models_available": models_available, "message": message}
+        return {
+            "ok": True,
+            "models_available": models_available,
+            "separation_available": engine is not None
+            or importlib.util.find_spec("audio_separator") is not None,
+            "message": message,
+        }
 
     @app.post("/uploads", status_code=201)
     async def upload(request: Request):
@@ -849,6 +885,49 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None, assessor=N
                 return metadata
 
         return await asyncio.to_thread(run)
+
+    @app.post("/extractions", status_code=202)
+    def create_extraction(body: ExtractionInput):
+        return app.state.store.extractions.create(body.song_id, body.title)
+
+    @app.get("/extractions")
+    def extraction_library():
+        return app.state.store.extractions.library()
+
+    @app.get("/extractions/{extraction_id}")
+    def extraction(extraction_id: str):
+        return app.state.store.extractions.get(extraction_id)
+
+    @app.post("/extractions/{extraction_id}/retry", status_code=202)
+    def retry_extraction(extraction_id: str):
+        return app.state.store.extractions.retry(extraction_id)
+
+    @app.get("/extractions/{extraction_id}/player")
+    async def extraction_player(extraction_id: str):
+        try:
+            return await asyncio.to_thread(app.state.store.extractions.player, extraction_id)
+        except (ValueError, OSError, sf.LibsndfileError) as error:
+            LOGGER.exception("could not prepare the extraction player")
+            raise HTTPException(
+                422, "Could not load the tracks. Retry or extract the song again."
+            ) from error
+
+    @app.get("/extractions/{extraction_id}/player/{kind}.flac")
+    def extraction_player_track(extraction_id: str, kind: str):
+        path = app.state.store.extractions.player_track(extraction_id, kind)
+        return FileResponse(path, media_type="audio/flac")
+
+    @app.post("/extractions/{extraction_id}/levels")
+    def save_extraction_levels(extraction_id: str, body: ExtractionLevelsInput):
+        try:
+            return app.state.store.extractions.save_levels(extraction_id, **body.model_dump())
+        except OSError as error:
+            raise HTTPException(503, "Could not save the mix levels. Retry saving.") from error
+
+    @app.get("/extractions/{extraction_id}/audio/{kind}.wav")
+    def extraction_audio(extraction_id: str, kind: str):
+        path = app.state.store.extractions.audio(extraction_id, kind)
+        return FileResponse(path, media_type="audio/wav", filename=f"{kind}.wav")
 
     @app.post("/jobs", status_code=202)
     async def create_job(body: JobInput):
@@ -951,6 +1030,8 @@ def create_app(storage_dir: Path | str | None = None, *, engine=None, assessor=N
     async def studio(name: str):
         if name not in {
             "index.html",
+            "stems.html",
+            "stems.js",
             "player.js",
             "player.css",
             "mixer.js",

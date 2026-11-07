@@ -92,6 +92,23 @@ def create_inputs(root):
 class SyntheticEngine:
     """replace expensive separation/asr only; use the production renderer and raw audio."""
 
+    def extract(self, song, work_dir, progress):
+        from cover_engine.audio import decode
+
+        progress("separating", "Preparing synthetic fixture tracks")
+        decode(song, work_dir / "song.wav")
+        duration = sf.info(work_dir / "song.wav").duration
+        if duration < 4:
+            raise ValueError("Use a generated fixture song of at least 4 seconds.")
+        reference_step = min(0.45, (duration - 2.5) / 7.76)
+        sf.write(
+            work_dir / "vocals.wav",
+            voice(words(2, reference_step), duration),
+            RATE,
+            subtype="FLOAT",
+        )
+        sf.write(work_dir / "instrumental.wav", backing(duration), RATE, subtype="FLOAT")
+
     def analyze(self, song, vocal, work_dir, progress):
         from cover_engine.alignment import phrase_plan
         from cover_engine.audio import decode
@@ -236,7 +253,34 @@ def ensure_song(client, title, original_path, take_specs):
     return song_id, take_ids
 
 
+def ensure_extraction(client, song_id):
+    item = checked(
+        client.post("/extractions", json={"song_id": song_id, "title": "Extracted fixture"}), 202
+    )
+    if item["phase"] == "failed":
+        checked(client.post(f"/extractions/{item['id']}/retry"), 202)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        item = checked(client.get(f"/extractions/{item['id']}"))
+        if item["phase"] == "ready":
+            return item["id"]
+        if item["phase"] == "failed":
+            raise RuntimeError(item["error"])
+        time.sleep(0.05)
+    raise TimeoutError("The synthetic extraction did not finish.")
+
+
 def verify(client, state):
+    extraction_id = state["extraction_id"]
+    for kind in ("instrumental", "vocals"):
+        response = client.get(f"/extractions/{extraction_id}/audio/{kind}.wav")
+        if response.status_code != 200 or not response.content.startswith(b"RIFF"):
+            raise RuntimeError(f"Missing extracted audio: {kind}")
+        chunk = client.get(
+            f"/extractions/{extraction_id}/audio/{kind}.wav", headers={"Range": "bytes=0-255"}
+        )
+        if chunk.status_code != 206 or chunk.content != response.content[:256]:
+            raise RuntimeError(f"Extracted audio range failed: {kind}")
     for job_id in [*state["take_ids"].values(), state["other_take_id"]]:
         job = checked(client.get(f"/jobs/{job_id}"))
         preview = checked(client.get(f"/jobs/{job_id}/preview?revision={job['revision']}"))
@@ -321,6 +365,8 @@ def main():
             "state_file": str(root / "state.json"),
             "song_id": song_id,
             "song_title": TITLE,
+            "extraction_id": ensure_extraction(client, song_id),
+            "extraction_title": "Extracted fixture",
             "take_ids": take_ids,
             "other_song_id": other_song_id,
             "other_take_id": other_ids["other"],

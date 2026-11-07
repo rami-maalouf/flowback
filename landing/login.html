@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Log in to Flowback</title>
+<meta name="theme-color" content="#F2F8F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0C2427" media="(prefers-color-scheme: dark)">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/landing/flowback-icon.png" type="image/png">
+<link rel="apple-touch-icon" href="/landing/flowback-icon.png">
+<link rel="stylesheet" href="/landing/landing.css">
+</head>
+<body>
+<main>
+  <form class="card rise" method="post" action="/login">
+    <img class="mark" src="/landing/flowback-icon.png" alt="" width="64" height="64">
+    <h1>Log in to Flowback</h1>
+    <p class="sub">Use the account you were given.</p>
+    {{message}}
+    <input type="hidden" name="next" value="{{next}}">
+    <label for="name">Name</label>
+    <input id="name" name="name" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
+    <button class="primary" type="submit">Log in</button>
+  </form>
+  <a class="back rise d2" href="/">Back to Flowback</a>
+</main>
+</body>
+</html>

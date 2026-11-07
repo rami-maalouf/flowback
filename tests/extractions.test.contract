@@ -1,0 +1,66 @@
+test "instrumentals has its own library and original-only import"
+  size 390x844
+  clock data
+  tap "instrumentals"
+  clock data
+  expect tree has "instrumentals-library"
+  tap "add-extraction"
+  clock settle
+  expect tree has "extraction-form"
+  expect tree has "choose-extraction-song"
+  expect tree has "extract-song"
+  expect tree missing "choose-vocal"
+  type "extraction-title" "My backing track"
+  tap "extract-back"
+  clock settle
+  tap "add-extraction"
+  clock settle
+  expect state extractionTitle == "My backing track"
+  reload
+  clock data
+  expect state extractionTitle == "My backing track"
+
+test "adding vocals from extracted tracks returns to them"
+  size 390x844
+  clock data
+  tap "instrumentals"
+  clock data
+  tap "Open Extracted fixture"
+  clock data
+  expect tree has "stem-player"
+  tap "extraction-add-vocals"
+  clock data
+  expect tree has "add-take-form"
+  expect text "take-back" == "Extracted tracks"
+  expect text "take-song-title" == "Extracted fixture"
+  expect text "take-intro" == "Add your vocal recording. We’ll reuse the extracted instrumental and match the section you sang."
+  tap "take-back"
+  clock settle
+  expect tree has "extraction-detail"
+  tap "instrumental-back"
+  clock settle
+  tap "instrumentals-back"
+  clock settle
+  tap "Open Practice fixture"
+  clock data
+  tap "add-take"
+  clock data
+  expect text "take-back" == "Song"
+
+test "a bad youtube link keeps the extraction form available"
+  size 390x844
+  clock data
+  tap "instrumentals"
+  clock data
+  tap "add-extraction"
+  clock settle
+  tap "extraction-source-youtube"
+  type "extraction-youtube-url" "https://example.com/music"
+  expect disabled "extract-song"
+  tap "extraction-import-youtube"
+  clock data
+  expect text "extraction-import-error" == "Paste a link to a single YouTube video, or choose an audio file."
+  expect state extractionUrlDirty == true
+  expect tree has "extraction-song-card"
+  tap "extraction-source-file"
+  expect tree has "choose-extraction-song"

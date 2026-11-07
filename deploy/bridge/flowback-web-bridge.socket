@@ -1,0 +1,14 @@
+# installed by hand on a server whose reverse proxy runs in docker: it reaches the web app's
+# loopback port through this socket. ListenStream is the gateway of the proxy's docker network
+# (`docker network inspect traefik`); nothing outside the server can reach that address.
+[Unit]
+Description=Flowback web app bridge for the reverse proxy
+After=docker.service
+Requires=docker.service
+
+[Socket]
+ListenStream=172.26.0.1:8894
+FreeBind=true
+
+[Install]
+WantedBy=sockets.target

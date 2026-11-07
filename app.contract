@@ -93,6 +93,32 @@ shape Library
   covers: SavedCover[]
   error: string
 
+shape Extraction
+  id: string
+  song_id: string
+  title: string
+  song_name: string
+  duration: number
+  created_at: number
+  phase: string
+  message: string
+  error: string
+
+shape Extractions
+  extractions: Extraction[]
+  error: string
+
+shape ExtractionDraft
+  song_id: string
+  song_name: string
+  song_duration: number
+  error: string
+
+shape ExtractionReply
+  ok: bool
+  error: string
+  id: string
+
 shape Reply
   ok: bool
   error: string
@@ -102,12 +128,126 @@ fn duration(n: number): string = `${floor(n / 60)}:${pad(floor(n) % 60)}`
 
 routes nav
   home "/"
+    instrumentals "/instrumentals"
+      extract "/instrumentals/extract"
+      instrumental "/instrumentals/song"
     deleted "/deleted"
     add "/add"
     cover "/cover"
       addTake "/cover/add-take"
 
 component ExactCover
+  resource extractions = loadExtractions() as shape Extractions
+  resource extractionDraft = loadExtractionDraft() as shape ExtractionDraft
+  resource extraction = loadExtraction(extractionId) as shape Extraction
+  mutation extracted as shape ExtractionReply refreshes extractions, extractionDraft then afterExtraction
+  mutation extractionChanged as shape Reply refreshes extractionDraft, extraction, extractions then afterExtractionChange
+  mutation stemExported as shape Reply then stemPrepared
+  state extractionId = "" persist
+  state extractionTitle = "" persist
+  state extractionQuery = ""
+  state extractionIntent = ""
+  state extractionSource = "file" persist
+  state extractionUrl = "" persist
+  state extractionUrlDirty = false persist
+  state takeOrigin = "" persist
+  state stemKind = ""
+  state stemReady = ""
+  state stemNotice = ""
+  state stemHeight = 300
+  derive extractionError = match extracted { case some(r) => r.error, case none => "" }
+  derive extractionChangeError = match extractionChanged { case some(r) => r.error, case none => "" }
+  derive stemError = match stemExported { case some(r) => r.error, case none => "" }
+  derive filteredExtractions = extractions.extractions.filter(e => e.title.toLowerCase().includes(extractionQuery.trim().toLowerCase()) or e.song_name.toLowerCase().includes(extractionQuery.trim().toLowerCase()))
+  derive extractionPending = pending(extracted) or pending(extractionChanged) or pending(stemExported)
+  action openInstrumentals
+    nav = push(nav, "/instrumentals")
+    refresh extractions
+  action addExtraction
+    nav = push(nav, "/instrumentals/extract")
+  action editExtractionTitle(value: string)
+    extractionTitle = value
+  action searchExtractions(value: string)
+    extractionQuery = value
+  action chooseExtractionSong
+    showPicker("extraction-file")
+  action extractionPicked(files: Picked[])
+    match first(files)
+      case some(f)
+        extractionIntent = "file"
+        send extractionChanged = importExtractionAudio(f.path, f.name, f.size)
+      case none
+        stemNotice = ""
+  action chooseExtractionFileSource
+    extractionSource = "file"
+    extractionUrlDirty = false
+  action chooseExtractionYoutubeSource
+    if extractionSource != "youtube"
+      extractionUrlDirty = extractionUrl != ""
+    extractionSource = "youtube"
+  action editExtractionUrl(value: string)
+    extractionUrl = value
+    extractionUrlDirty = true
+  action importExtractionUrl
+    extractionIntent = "youtube"
+    send extractionChanged = importExtractionYoutube(extractionUrl)
+  action afterExtractionChange
+    if extractionChangeError == "" and extractionIntent == "youtube"
+      extractionUrlDirty = false
+    extractionIntent = ""
+  action extractSong
+    send extracted = createExtraction(extractionTitle)
+  action afterExtraction
+    match extracted
+      case some(r)
+        if r.ok
+          extractionId = r.id
+          extractionTitle = ""
+          extractionUrl = ""
+          extractionUrlDirty = false
+          extractionSource = "file"
+          stemReady = ""
+          stemNotice = ""
+          nav = replace(nav, "/instrumentals/song")
+      case none
+        stemNotice = ""
+  action openExtraction(id: string)
+    extractionId = id
+    stemReady = ""
+    stemNotice = ""
+    stemHeight = 300
+    nav = push(nav, "/instrumentals/song")
+  action retryStem
+    extractionIntent = "retry"
+    send extractionChanged = retryExtraction(extractionId)
+  action extractionCover
+    takeOrigin = "extraction"
+    intent = "extraction-cover"
+    send changed = openExtractionCover(extractionId)
+  action exportStem(kind: string)
+    if not pending(stemExported)
+      stemNotice = ""
+      stemKind = kind
+      if stemReady == `${extractionId}:${kind}`
+        saveFile("stem-file", `app:/tmp/output/${kind}.wav`, `${extraction.title} (${kind == "vocals" ? "Vocals" : "Instrumental"}).wav`)
+      else
+        stemReady = ""
+        send stemExported = prepareStemExport(extractionId, kind)
+  action stemPrepared
+    if stemError == ""
+      stemReady = `${extractionId}:${stemKind}`
+  action stemSaved(name: string)
+    stemNotice = stemKind == "vocals" ? "Vocals saved." : "Instrumental saved."
+  action stemCancelled
+    stemNotice = "Save cancelled. Your tracks are still here."
+  action stemMessage(data: string)
+    if data.startsWith(`flowback-stems:${extractionId}:height:`)
+      match parseNumber(data.slice(extractionId.length + 23))
+        case some(value)
+          if value >= 160 and value <= 1200
+            stemHeight = value
+        case none
+          stemHeight = 300
   resource draft = loadDraft() as shape Draft
   resource session = loadSession() as shape Session
   resource library = loadLibrary() as shape Library
@@ -164,10 +304,13 @@ component ExactCover
   task poll mount
     every(2000, refresh)
   action refresh
-    if not pending(changed) and not pending(libraryChanged)
+    if not pending(changed) and not pending(libraryChanged) and not extractionPending
       refresh session
       refresh library
       refresh takes
+      refresh extractions
+      if top(nav).name == "instrumental"
+        refresh extraction
       if top(nav).name == "deleted"
         refresh removedLibrary
   action askDelete(id: string, name: string, count: number)
@@ -206,12 +349,12 @@ component ExactCover
     refresh removedLibrary
     nav = push(nav, "/deleted")
   action back
-    if not pending(changed) and not pending(exported) and not pending(named) and not pending(libraryChanged)
+    if not pending(changed) and not pending(exported) and not pending(named) and not pending(libraryChanged) and not extractionPending
       playerReadyKey = ""
       nav = back(nav)
       refresh library
   action follow(url: string)
-    if not pending(changed) and not pending(exported) and not pending(named) and not pending(libraryChanged)
+    if not pending(changed) and not pending(exported) and not pending(named) and not pending(libraryChanged) and not extractionPending
       playerReadyKey = ""
       nav = go(nav, url)
   action search(value: string)
@@ -225,6 +368,7 @@ component ExactCover
     intent = ""
     nav = push(nav, "/add")
   action addTake
+    takeOrigin = ""
     feedback = ""
     playerReadyKey = ""
     playbackAt = originalPosition
@@ -273,8 +417,11 @@ component ExactCover
       nav = intent == "create" ? replace(nav, "/cover") : push(nav, "/cover")
       if intent == "create"
         title = ""
+    if error == "" and intent == "extraction-cover"
+      nav = push(nav, "/cover/add-take")
     if error == "" and intent == "create-take"
-      nav = back(nav)
+      nav = takeOrigin == "extraction" ? go(go(nav, "/"), "/cover") : go(nav, "/cover")
+      takeOrigin = ""
     if error == "" and intent == "youtube"
       youtubeDirty = false
     if error == "" and intent == "create"
@@ -415,14 +562,16 @@ component ExactCover
           column navigationKey=`${entry.id}` navigationBar="none" navigationScroll="library-content" navigationSplit="none" position="absolute" inset=0 display="flex" flex-direction="column"
             header role="toolbar" toolbarPlacement="window" aria-label="Library" display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
               text "Flowback" role="heading" aria-level=1 flex=1
+              button press=openInstrumentals buttonStyle="bordered" testId="instrumentals"
+                text "Instrumentals"
               button press=addSong buttonStyle="bordered-prominent" disabled=(pending(changed) or pending(exported) or pending(libraryChanged)) testId="add-song"
                 text "Add song"
             scroll id="library-content" flex=1 min-height=0
-              column width="100%" box-sizing="border-box" min-width=0 max-width=840 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="library"
+              column width="100%" box-sizing="border-box" min-width=0 max-width="52.5rem" margin-left="auto" margin-right="auto" padding=24 gap=24 testId="library"
                 row gap=14 align-items="center" padding-top=4
                   image "assets/flowback-icon.png" width=64 height=64 flex-shrink=0 aria-hidden=true
                   column gap=6 flex=1 min-width=0
-                    text "Your songs" role="heading" aria-level=2 font-size=28 font-weight=650
+                    text "Your songs" role="heading" aria-level=2 font-size="1.75rem" font-weight=650
                     text `${library.covers.length} ${library.covers.length == 1 ? "song" : "songs"} · Saved on this Mac` font="-exact-subheadline" color="text.secondary"
                 if library.error != ""
                   column padding=20 gap=10 border-radius=12 background-color="surface.card" testId="library-error"
@@ -435,8 +584,8 @@ component ExactCover
                 else if library.covers.length == 0
                   column gap=16 padding="48px 24px" align-items="center" testId="library-empty"
                     image "assets/flowback-icon.png" width=100 height=100 aria-hidden=true
-                    text "Your first cover starts here" font-size=22 font-weight=600 text-align="center"
-                    text "Bring an original song and your vocal recording. We’ll match the section you sang." color="text.secondary" text-align="center" line-height=1.5 max-width=340
+                    text "Your first cover starts here" font-size="1.375rem" font-weight=600 text-align="center"
+                    text "Bring an original song and your vocal recording. We’ll match the section you sang." color="text.secondary" text-align="center" line-height=1.5 max-width="21.25rem"
                     button press=addSong buttonStyle="bordered-prominent" testId="add-first-song"
                       text "Add your first song"
                 else
@@ -451,11 +600,11 @@ component ExactCover
                     else
                       column border-radius=14 border-width=1 border-style="solid" border-color="border.hairline" overflow="hidden" background-color="surface.card"
                         for cover in songs key=cover.id
-                          row align-items="center" padding-right=8 border-width=0 border-bottom-width=1 border-style="solid" border-color="border.hairline"
-                            button press=openSaved(cover.latest_take_id) disabled=(pending(changed) or pending(exported) or pending(libraryChanged)) aria-label=`Open ${cover.title}` testId=`open-${cover.id}` display="flex" align-items="center" gap=14 padding="16px" flex=1 min-width=0 box-sizing="border-box" text-align="left" background-color="transparent" border-width=0 border-radius=0
-                              column width=42 height=42 flex-shrink=0 align-items="center" justify-content="center" border-radius=10 background-color="surface.soft"
-                                image "symbol:waveform" width=22 height=22 color="brand.ink"
-                              column flex=1 min-width=0 gap=5
+                          row align-items="center" flex-wrap="wrap" padding-right=8 border-width=0 border-bottom-width=1 border-style="solid" border-color="border.hairline"
+                            button press=openSaved(cover.latest_take_id) disabled=(pending(changed) or pending(exported) or pending(libraryChanged)) aria-label=`Open ${cover.title}` testId=`open-${cover.id}` display="flex" flex-wrap="wrap" align-items="center" gap=14 padding="16px" flex="1 1 12rem" min-width=0 box-sizing="border-box" text-align="left" background-color="transparent" border-width=0 border-radius=0
+                              column width="2.625rem" height="2.625rem" flex-shrink=0 align-items="center" justify-content="center" border-radius=10 background-color="surface.soft"
+                                image "symbol:waveform" width="1.375rem" height="1.375rem" color="brand.ink"
+                              column flex="1 1 8rem" min-width=0 gap=5
                                 text cover.title font-weight=600 line-clamp=2
                                 row gap=8 flex-wrap="wrap" align-items="center"
                                   text `${cover.take_count} ${cover.take_count == 1 ? "take" : "takes"}` font="-exact-footnote" color="text.secondary"
@@ -463,9 +612,9 @@ component ExactCover
                                   if cover.duration > 0
                                     text `· ${duration(cover.duration)}` font="-exact-footnote" color="text.secondary" font-variant-numeric="tabular-nums"
                                   text `· ${cover.saved_at}` font="-exact-footnote" color="text.secondary"
-                              image "symbol:forward-chevron" width=12 height=16 flex-shrink=0 color="text.secondary"
-                            button press=askDelete(cover.id, cover.title, cover.take_count) disabled=(pending(changed) or pending(exported) or pending(libraryChanged)) aria-label=`Delete ${cover.title}` testId=`delete-${cover.id}` background-color="transparent" border-width=0 width=44 height=44 flex-shrink=0 display="flex" justify-content="center" align-items="center"
-                              image "symbol:delete" width=18 height=20 color="text.secondary"
+                              image "symbol:forward-chevron" width="0.75rem" height="1rem" flex-shrink=0 color="text.secondary"
+                            button press=askDelete(cover.id, cover.title, cover.take_count) disabled=(pending(changed) or pending(exported) or pending(libraryChanged)) aria-label=`Delete ${cover.title}` testId=`delete-${cover.id}` background-color="transparent" border-width=0 width="2.75rem" height="2.75rem" flex-shrink=0 display="flex" justify-content="center" align-items="center"
+                              image "symbol:delete" width="1.125rem" height="1.25rem" color="text.secondary"
                 if pending(libraryChanged)
                   text "Updating library…" role="status" color="text.secondary"
                 if libraryNotice != ""
@@ -481,6 +630,155 @@ component ExactCover
                   text "Opening song…" role="status" color="text.secondary"
                 if visibleError != "" and feedback == "open" and not pending(changed)
                   text visibleError color="-exact-system-red" role="alert" testId="library-action-error"
+        if entry.name == "instrumentals"
+          column navigationKey=`${entry.id}` navigationScroll="instrumentals-content" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+              button id="back" press=back disabled=extractionPending testId="instrumentals-back"
+                text "Your songs"
+              text "Instrumentals" role="heading" aria-level=2 flex="1 1 auto" min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+              button press=addExtraction buttonStyle="bordered-prominent" disabled=extractionPending testId="add-extraction"
+                text "Extract song"
+            scroll id="instrumentals-content" flex=1 min-height=0
+              column width="100%" box-sizing="border-box" min-width=0 max-width="52.5rem" margin-left="auto" margin-right="auto" padding=24 gap=24 testId="instrumentals-library"
+                column gap=8
+                  text "Keep the groove." font-size="1.75rem" font-weight=650 role="heading" aria-level=3
+                  text "Separate a song into its instrumental and original vocals. Listen, save either track, or add your voice later." color="text.secondary" line-height=1.5
+                if extractions.error != ""
+                  column gap=12
+                    text extractions.error role="alert" color="-exact-system-red" testId="extractions-error"
+                    button press=refresh buttonStyle="bordered"
+                      text "Try again"
+                else if pending(extractions) and extractions.extractions.length == 0
+                  progress aria-label="Loading extracted songs"
+                else if extractions.extractions.length == 0
+                  column align-items="center" gap=16 padding="40px 20px" testId="extractions-empty"
+                    image "symbol:waveform" width="3rem" height="3rem" color="brand.ink" aria-hidden=true
+                    text "Just bring the original." font-size="1.375rem" font-weight=600 text-align="center"
+                    text "No vocal recording needed. Your extracted tracks will live here." color="text.secondary" text-align="center" line-height=1.5 max-width="21.25rem"
+                    button press=addExtraction buttonStyle="bordered-prominent" testId="first-extraction"
+                      text "Extract your first song"
+                else
+                  column gap=16
+                    input type="search" value=extractionQuery input=searchExtractions placeholder="Search extracted songs" aria-label="Search extracted songs" testId="extraction-search"
+                    if filteredExtractions.length == 0
+                      text "No matching extracted songs." color="text.secondary" testId="extraction-search-empty"
+                    for item in filteredExtractions key=item.id
+                      button press=openExtraction(item.id) disabled=extractionPending testId=`extraction-${item.id}` aria-label=`Open ${item.title}` display="flex" flex-wrap="wrap" align-items="center" gap=14 padding=18 text-align="left" background-color="surface.card" border-radius=14 border-width=1 border-style="solid" border-color="border.hairline"
+                        image "symbol:waveform" width="1.625rem" height="1.625rem" color="brand.ink" flex-shrink=0
+                        column flex="1 1 8rem" min-width=0 gap=6
+                          text item.title font-weight=600 line-clamp=2
+                          text `${duration(item.duration)} · ${item.phase == "ready" ? "Instrumental & vocals" : item.phase == "failed" ? "Needs attention" : "Extracting…"}` font="-exact-footnote" color="text.secondary"
+                        image "symbol:forward-chevron" width="0.75rem" height="1rem" color="text.secondary"
+        if entry.name == "extract"
+          column navigationKey=`${entry.id}` navigationScroll="extract-content" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+              button id="back" press=back disabled=extractionPending testId="extract-back"
+                text "Instrumentals"
+              text "Extract a song" role="heading" aria-level=2 flex=1
+            scroll id="extract-content" flex=1 min-height=0
+              column width="100%" box-sizing="border-box" min-width=0 max-width="40rem" margin-left="auto" margin-right="auto" padding=24 gap=24 testId="extraction-form"
+                column gap=8
+                  text "One song. Two tracks." font-size="1.75rem" font-weight=650
+                  text "Choose the original recording, including its vocals. We’ll save the full instrumental and vocal tracks separately." color="text.secondary" line-height=1.5
+                column gap=8
+                  row gap=8 align-items="baseline" flex-wrap="wrap"
+                    text "Song name" font-weight=600
+                    text "Optional" font="-exact-footnote" color="text.secondary"
+                  input value=extractionTitle input=editExtractionTitle maxlength=160 placeholder="Use the imported song’s name" aria-label="Song name" testId="extraction-title"
+                column padding=20 gap=16 border-radius=14 background-color="surface.card" border-style="solid" border-width=1 border-color="border.hairline" testId="extraction-song-card"
+                  row gap=10 align-items="center" flex-wrap="wrap"
+                    text "Original song" font-weight=600 flex=1
+                    if extractionDraft.song_id != "" and not extractionUrlDirty
+                      text "Added" font="-exact-footnote" color="-exact-system-green"
+                  row role="tablist" aria-label="Original song source" flex-wrap="wrap" gap=4 padding=4 border-radius=10 background-color="surface.soft"
+                    button role="tab" aria-selected=(extractionSource == "file") aria-controls="extraction-source" press=chooseExtractionFileSource disabled=extractionPending testId="extraction-source-file" flex="1 1 8rem" border-width=0 border-radius=7 padding="8px 10px" background-color=(extractionSource == "file" ? "surface.selected" : "transparent") color="text.primary"
+                      text "Audio file"
+                    button role="tab" aria-selected=(extractionSource == "youtube") aria-controls="extraction-source" press=chooseExtractionYoutubeSource disabled=extractionPending testId="extraction-source-youtube" flex="1 1 8rem" border-width=0 border-radius=7 padding="8px 10px" background-color=(extractionSource == "youtube" ? "surface.selected" : "transparent") color="text.primary"
+                      text "YouTube link"
+                  column id="extraction-source" role="tabpanel" gap=12
+                    if extractionSource == "file"
+                      if extractionDraft.song_id == ""
+                        text "Choose the full track, including the artist’s vocals." color="text.secondary" font="-exact-subheadline" line-height=1.4
+                      button press=chooseExtractionSong buttonStyle="bordered" disabled=extractionPending testId="choose-extraction-song"
+                        text (pending(extractionChanged) and extractionIntent == "file" ? "Importing audio…" : extractionDraft.song_id == "" ? "Choose audio file…" : "Replace audio file…")
+                      text "WAV, MP3, M4A or FLAC · Up to 64 MB" font="-exact-footnote" color="text.secondary"
+                    else
+                      row gap=10 flex-wrap="wrap" align-items="center"
+                        input value=extractionUrl input=editExtractionUrl placeholder="Paste a YouTube link" aria-label="YouTube link" disabled=extractionPending testId="extraction-youtube-url" flex="1 1 180px" min-width=0
+                        button press=importExtractionUrl buttonStyle="bordered" disabled=(extractionUrl.trim() == "" or extractionPending) testId="extraction-import-youtube"
+                          text (pending(extractionChanged) and extractionIntent == "youtube" ? "Importing…" : "Import")
+                      text "Single public video, up to 20 minutes." font="-exact-footnote" color="text.secondary"
+                    if pending(extractionChanged)
+                      progress aria-label="Importing original song"
+                    if extractionDraft.song_id != ""
+                      row gap=12 align-items="center"
+                        image "symbol:waveform" width="1.25rem" height="1.25rem" color="text.secondary"
+                        column flex=1 min-width=0 gap=3
+                          text extractionDraft.song_name font-weight=500 line-clamp=2 testId="extraction-song-name"
+                          text `${duration(extractionDraft.song_duration)} · ${extractionUrlDirty ? "Import the new link to replace this track" : "Ready to extract"}` font="-exact-footnote" color="text.secondary"
+                if extractionDraft.error != ""
+                  text extractionDraft.error color="-exact-system-red" role="alert"
+                if extractionChangeError != ""
+                  text extractionChangeError color="-exact-system-red" role="alert" testId="extraction-import-error"
+                if extractionError != ""
+                  text extractionError color="-exact-system-red" role="alert" testId="extraction-create-error"
+                if not session.online
+                  text "The audio engine is disconnected. Reconnecting automatically…" color="text.secondary"
+                button press=extractSong buttonStyle="bordered-prominent" disabled=(extractionDraft.song_id == "" or extractionUrlDirty or not session.online or extractionPending) testId="extract-song"
+                  text (pending(extracted) ? "Starting…" : "Extract instrumental & vocals")
+                text (extractionUrlDirty ? "Import your YouTube link to continue." : "Your draft is saved automatically. You can add your own vocals later.") color="text.secondary" font="-exact-footnote" text-align="center" line-height=1.5
+                input type="file" id="extraction-file" testId="extraction-file" display="none" change=extractionPicked
+        if entry.name == "instrumental"
+          column navigationKey=`${entry.id}` navigationScroll="instrumental-content" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+              button id="back" press=back disabled=(extractionPending or pending(changed)) testId="instrumental-back"
+                text "Instrumentals"
+              text "Extracted tracks" role="heading" aria-level=2 flex=1
+            scroll id="instrumental-content" flex=1 min-height=0
+              column width="100%" box-sizing="border-box" min-width=0 max-width="47.5rem" margin-left="auto" margin-right="auto" padding=24 gap=24 testId="extraction-detail"
+                column gap=8
+                  text extraction.title font-size="1.75rem" font-weight=650 line-clamp=3 testId="extracted-title"
+                  text `${duration(extraction.duration)} · Full song` color="text.secondary"
+                if extraction.phase == "queued" or extraction.phase == "separating"
+                  column padding=24 gap=16 border-radius=14 background-color="surface.card" testId="extraction-processing"
+                    text "Separating your song" font-size="1.25rem" font-weight=600
+                    text extraction.message color="text.secondary" line-height=1.5
+                    progress aria-label="Extracting instrumental and vocals"
+                    text "You can return to your library. Processing will continue." color="text.secondary" font="-exact-footnote"
+                if extraction.error != ""
+                  column gap=12 testId="extraction-failure"
+                    text extraction.error color="-exact-system-red" role="alert"
+                    if extraction.phase == "failed"
+                      button press=retryStem buttonStyle="bordered" disabled=(extractionPending or not session.online) testId="retry-extraction"
+                        text "Try again"
+                    else
+                      button press=refresh buttonStyle="bordered"
+                        text "Reconnect"
+                if extraction.phase == "ready" and top(nav).name == "instrumental"
+                  column padding=20 gap=16 border-radius=14 background-color="surface.card" border-width=1 border-style="solid" border-color="border.hairline"
+                    iframe src=`${session.studio_origin}/studio/stems.html?extraction=${extraction.id}&embedded=1` message=stemMessage aria-label="Instrumental and vocal mixer" width="100%" height=stemHeight border-width=0 hatch="mixer-scroll" testId="stem-player"
+                  column gap=12
+                    text "Save your tracks" font-weight=600
+                    row gap=12 flex-wrap="wrap"
+                      button press=exportStem("instrumental") buttonStyle="bordered-prominent" disabled=pending(stemExported) testId="save-instrumental"
+                        text (pending(stemExported) and stemKind == "instrumental" ? "Preparing…" : stemReady == `${extractionId}:instrumental` ? "Save instrumental WAV…" : "Download instrumental")
+                      button press=exportStem("vocals") buttonStyle="bordered" disabled=pending(stemExported) testId="save-original-vocals"
+                        text (pending(stemExported) and stemKind == "vocals" ? "Preparing…" : stemReady == `${extractionId}:vocals` ? "Save vocals WAV…" : "Download vocals")
+                    if stemError != ""
+                      text stemError color="-exact-system-red" role="alert"
+                    if stemNotice != ""
+                      text stemNotice role="status" color="text.secondary" testId="stem-save-notice"
+                  column gap=12 padding-top=20 border-width=0 border-top-width=1 border-style="solid" border-color="border.hairline"
+                    text "Make it yours" font-size="1.25rem" font-weight=600
+                    text "Add a vocal recording whenever you’re ready. Your extracted tracks will stay here." color="text.secondary" line-height=1.5
+                    button press=extractionCover buttonStyle="bordered" disabled=(pending(changed) or extractionPending) align-self="start" testId="extraction-add-vocals"
+                      text "Add your vocals…"
+                  text "Separation may leave traces of the original voice or instruments." color="text.secondary" font="-exact-footnote" line-height=1.5
+                if extractionChangeError != ""
+                  text extractionChangeError color="-exact-system-red" role="alert"
+                if visibleError != "" and feedback == "extraction-cover"
+                  text visibleError color="-exact-system-red" role="alert"
+                input id="stem-file" display="none" change=stemSaved cancel=stemCancelled
         if entry.name == "deleted"
           column navigationKey=`${entry.id}` navigationScroll="deleted-content" navigationSplit="none" position="absolute" inset=0 display="flex" flex-direction="column"
             header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
@@ -488,7 +786,7 @@ component ExactCover
                 text "Your songs"
               text "Recently deleted" role="heading" aria-level=2 flex=1
             scroll id="deleted-content" flex=1 min-height=0
-              column width="100%" box-sizing="border-box" min-width=0 max-width=840 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="deleted-library"
+              column width="100%" box-sizing="border-box" min-width=0 max-width="52.5rem" margin-left="auto" margin-right="auto" padding=24 gap=24 testId="deleted-library"
                 text "Deleted songs and their takes stay on this Mac. Restore a song to bring back its recordings, mixes and analyses." color="text.secondary" line-height=1.5
                 if removedLibrary.error != ""
                   column gap=12
@@ -499,8 +797,8 @@ component ExactCover
                   progress aria-label="Loading deleted songs"
                 else if removedLibrary.covers.length == 0
                   column gap=12 padding="40px 16px" align-items="center" testId="deleted-empty"
-                    image "symbol:delete" width=32 height=36 color="text.secondary" aria-hidden=true
-                    text "No deleted songs" font-size=22 font-weight=600
+                    image "symbol:delete" width="2rem" height="2.25rem" color="text.secondary" aria-hidden=true
+                    text "No deleted songs" font-size="1.375rem" font-weight=600
                     text "Songs you delete will appear here." color="text.secondary" text-align="center"
                 else
                   column border-radius=14 border-width=1 border-style="solid" border-color="border.hairline" overflow="hidden" background-color="surface.card"
@@ -527,7 +825,7 @@ component ExactCover
                 text "Your songs"
               text "Add song" role="heading" aria-level=2 flex=1
             scroll id="add-content" flex=1 min-height=0
-              column width="100%" box-sizing="border-box" min-width=0 max-width=640 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="add-form"
+              column width="100%" box-sizing="border-box" min-width=0 max-width="40rem" margin-left="auto" margin-right="auto" padding=24 gap=24 testId="add-form"
                 column gap=8
                   text "Choose the original song and your vocal recording." color="text.secondary" line-height=1.45
                 column gap=8
@@ -541,10 +839,10 @@ component ExactCover
                     text "Original song" font-weight=600 flex=1
                     if draft.song_id != "" and not youtubeDirty
                       text "Added" font="-exact-footnote" color="-exact-system-green"
-                  row role="tablist" aria-label="Original song source" gap=4 padding=4 border-radius=10 background-color="surface.soft"
-                    button role="tab" aria-selected=(source == "file") aria-controls="original-source" press=chooseFileSource disabled=pending(changed) testId="source-file" flex=1 border-width=0 border-radius=7 padding="8px 10px" background-color=(source == "file" ? "surface.selected" : "transparent") color="text.primary"
+                  row role="tablist" aria-label="Original song source" flex-wrap="wrap" gap=4 padding=4 border-radius=10 background-color="surface.soft"
+                    button role="tab" aria-selected=(source == "file") aria-controls="original-source" press=chooseFileSource disabled=pending(changed) testId="source-file" flex="1 1 8rem" border-width=0 border-radius=7 padding="8px 10px" background-color=(source == "file" ? "surface.selected" : "transparent") color="text.primary"
                       text "Audio file"
-                    button role="tab" aria-selected=(source == "youtube") aria-controls="original-source" press=chooseYoutubeSource disabled=pending(changed) testId="source-youtube" flex=1 border-width=0 border-radius=7 padding="8px 10px" background-color=(source == "youtube" ? "surface.selected" : "transparent") color="text.primary"
+                    button role="tab" aria-selected=(source == "youtube") aria-controls="original-source" press=chooseYoutubeSource disabled=pending(changed) testId="source-youtube" flex="1 1 8rem" border-width=0 border-radius=7 padding="8px 10px" background-color=(source == "youtube" ? "surface.selected" : "transparent") color="text.primary"
                       text "YouTube link"
                   column id="original-source" role="tabpanel" gap=12
                     if source == "file"
@@ -562,7 +860,7 @@ component ExactCover
                       progress aria-label="Importing original song"
                     if draft.song_id != ""
                       row gap=12 align-items="center"
-                        image "symbol:waveform" width=20 height=20 color="text.secondary"
+                        image "symbol:waveform" width="1.25rem" height="1.25rem" color="text.secondary"
                         column flex=1 min-width=0 gap=3
                           text draft.song_name font-weight=500 line-clamp=2 testId="imported-song-name"
                           text `${duration(draft.song_duration)} · ${youtubeDirty ? "Import the new link to replace this track" : "Ready"}` font="-exact-footnote" color="text.secondary"
@@ -578,7 +876,7 @@ component ExactCover
                     text "A verse, a chorus, or the whole song. Use your voice on its own for the clearest result." color="text.secondary" font="-exact-subheadline" line-height=1.4 testId="vocal-name"
                   else
                     row gap=12 align-items="center"
-                      image "symbol:person" width=20 height=20 color="text.secondary"
+                      image "symbol:person" width="1.25rem" height="1.25rem" color="text.secondary"
                       column flex=1 min-width=0 gap=3
                         text draft.vocal_name font-weight=500 line-clamp=2 testId="imported-vocal-name"
                         text `${duration(draft.vocal_duration)} · Ready` font="-exact-footnote" color="text.secondary"
@@ -607,13 +905,13 @@ component ExactCover
           column navigationKey=`${entry.id}` navigationScroll="take-content" position="absolute" inset=0 display="flex" flex-direction="column"
             header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
               button id="back" press=back disabled=(pending(changed) or pending(named)) testId="take-back"
-                text "Song"
+                text (takeOrigin == "extraction" ? "Extracted tracks" : "Song")
               text "Add take" role="heading" aria-level=2 flex=1
             scroll id="take-content" flex=1 min-height=0
-              column width="100%" box-sizing="border-box" min-width=0 max-width=640 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="add-take-form"
+              column width="100%" box-sizing="border-box" min-width=0 max-width="40rem" margin-left="auto" margin-right="auto" padding=24 gap=24 testId="add-take-form"
                 column gap=8
-                  text session.title font-size=24 font-weight=650 testId="take-song-title"
-                  text "Add another vocal recording. We’ll reuse the original song and analyze this take separately." color="text.secondary" line-height=1.45
+                  text session.title font-size="1.5rem" font-weight=650 testId="take-song-title"
+                  text (takeOrigin == "extraction" ? "Add your vocal recording. We’ll reuse the extracted instrumental and match the section you sang." : "Add another vocal recording. We’ll reuse the original song and analyze this take separately.") color="text.secondary" line-height=1.45 testId="take-intro"
                 column gap=8
                   row gap=8 align-items="baseline" flex-wrap="wrap"
                     text "Take name" font-weight=600
@@ -654,16 +952,16 @@ component ExactCover
               button press=addTake buttonStyle="bordered-prominent" disabled=(session.song_id == "" or pending(changed) or pending(exported)) testId="add-take"
                 text "Add take"
             scroll id="cover-content" flex=1 min-height=0
-              column width="100%" box-sizing="border-box" min-width=0 max-width=760 margin-left="auto" margin-right="auto" padding=24 gap=24 testId="cover-detail"
+              column width="100%" box-sizing="border-box" min-width=0 max-width="47.5rem" margin-left="auto" margin-right="auto" padding=24 gap=24 testId="cover-detail"
                 column gap=8 padding-top=8
-                  text session.title role="heading" aria-level=3 font-size=28 font-weight=650 testId="cover-title"
+                  text session.title role="heading" aria-level=3 font-size="1.75rem" font-weight=650 testId="cover-title"
                   if session.job.phase == "ready"
                     text `${duration(session.job.duration)} cover · ${duration(session.job.start)} - ${duration(session.job.end)} in the original` color="text.secondary" font="-exact-subheadline" testId="result-range"
                   else
                     text "Your performance, on the original track." color="text.secondary" font="-exact-subheadline"
                 column gap=14 testId="takes"
                   row gap=12 align-items="center" flex-wrap="wrap"
-                    text `Your takes (${takes.takes.length})` role="heading" aria-level=3 font-size=17 font-weight=600 flex=1 min-width=120
+                    text `Your takes (${takes.takes.length})` role="heading" aria-level=3 font-size="1.0625rem" font-weight=600 flex=1 min-width=120
                     select value=sortBy change=sortTakes aria-label="Sort takes" testId="take-sort" max-width="100%"
                       option "Newest first" value="newest"
                       option "Lyric agreement" value="lyrics"
@@ -709,7 +1007,7 @@ component ExactCover
                 if busy
                   column padding=24 gap=20 border-radius=16 background-color="surface.card" border-style="solid" border-width=1 border-color="border.hairline" testId="processing"
                     column gap=8
-                      text "Making your cover" font-size=20 font-weight=600
+                      text "Making your cover" font-size="1.25rem" font-weight=600
                       text session.job.message color="text.secondary" line-height=1.4 testId="progress-message"
                     progress aria-label="Creating cover"
                     column gap=14
@@ -719,13 +1017,13 @@ component ExactCover
                     text "You can return to your library. Processing will continue." font="-exact-footnote" color="text.secondary"
                 if session.job.phase == "failed"
                   column padding=24 gap=14 border-radius=16 background-color="surface.card" testId="failure"
-                    text "We couldn’t finish this cover" font-size=20 font-weight=600
+                    text "We couldn’t finish this cover" font-size="1.25rem" font-weight=600
                     text session.job.error role="alert" line-height=1.45 testId="job-error"
                     button press=retry buttonStyle="bordered" disabled=(pending(changed) or not session.online or not session.models_available) testId="retry-cover"
                       text "Try again"
                 if session.job.phase == "choose"
                   column gap=16 testId="matches"
-                    text "Choose your section" role="heading" aria-level=3 font-size=20 font-weight=600
+                    text "Choose your section" role="heading" aria-level=3 font-size="1.25rem" font-weight=600
                     text "These lyrics repeat in the original. Choose the part you performed." color="text.secondary" line-height=1.45
                     for candidate in session.job.candidates key=candidate.id
                       column padding=20 gap=14 border-radius=14 background-color="surface.card" border-width=1 border-style="solid" border-color="border.hairline"
@@ -752,7 +1050,7 @@ component ExactCover
                   column gap=14 padding-top=8 border-width=0 border-top-width=1 border-style="solid" border-color="border.hairline"
                     button press=toggleDetails aria-expanded=showDetails testId="cover-details" display="flex" align-items="center" justify-content="space-between" gap=12 text-align="left" padding="10px 0" border-width=0 background-color="transparent" color="text.secondary"
                       text "Recording details"
-                      image "symbol:forward-chevron" width=12 height=14 rotate=(showDetails ? "90deg" : "0deg")
+                      image "symbol:forward-chevron" width="0.75rem" height="0.875rem" rotate=(showDetails ? "90deg" : "0deg")
                     if showDetails
                       column gap=12 testId="recording-details"
                         column gap=4

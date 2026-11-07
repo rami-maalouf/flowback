@@ -1,0 +1,16 @@
+# the route traefik needs for the public site, merged into its file provider's configuration.
+# it holds no secret: the web app asks for the password itself. traefik gets the certificate.
+http:
+  routers:
+    flowback:
+      rule: Host(`flowback.orbitlabs.studio`)
+      entryPoints:
+        - web-secure
+      service: flowback
+      tls:
+        certResolver: default
+  services:
+    flowback:
+      loadBalancer:
+        servers:
+          - url: http://172.26.0.1:8894
