@@ -1,6 +1,26 @@
 import { expect, test } from 'bun:test';
 import { answer } from '../app.ts';
 
+test('the mac library waits for its engine and preserves actionable startup errors', async () => {
+  const oldFetch = globalThis.fetch;
+  let requested = false, finish;
+  const starting = new Promise(resolve => { finish = resolve; });
+  const native = {available: true, call: () => ({managed: true}), later: () => starting};
+  globalThis.fetch = async () => { requested = true; return Response.json({songs: []}); };
+  try {
+    const library = answer('loadLibrary', [], {}, {}, native);
+    await Promise.resolve();
+    expect(requested).toBe(false);
+    finish({error: ''});
+    expect(await library).toEqual({covers: [], error: ''});
+    expect(requested).toBe(true);
+    native.later = async () => ({error: 'Engine missing. Reinstall Flowback.'});
+    requested = false;
+    expect(await answer('loadLibrary', [], {}, {}, native)).toEqual({covers: [], error: 'Engine missing. Reinstall Flowback.'});
+    expect(requested).toBe(false);
+  } finally { globalThis.fetch = oldFetch; }
+});
+
 function storageFixture() {
   const files = new Map();
   const storage = {fs: {

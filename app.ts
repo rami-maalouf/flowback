@@ -3,7 +3,7 @@ import type { Answer, Result, Sources, Storage } from './app.contract.d.ts';
 export const appId = 'com.rami.exact-cover';
 // the bake picks the entry for `origin`, which EXACT_BACKEND_ORIGIN overrides: deploy/deploy.sh builds the public site so.
 export const grants = {
-  'http://127.0.0.1:8891': ['net.fetch http://127.0.0.1:8891', 'fs.read app:/tmp/picked', 'fs.read app:/data', 'fs.write app:/data', 'fs.read app:/tmp/output', 'fs.write app:/tmp/output'],
+  'http://127.0.0.1:8891': ['runtime.allow-jit Resources/engine/bin/bun', 'net.fetch http://127.0.0.1:8891', 'fs.read app:/tmp/picked', 'fs.read app:/data', 'fs.write app:/data', 'fs.read app:/tmp/output', 'fs.write app:/tmp/output'],
   'https://flowback.orbitlabs.studio': ['net.fetch https://flowback.orbitlabs.studio', 'fs.read app:/tmp/picked', 'fs.read app:/data', 'fs.write app:/data', 'fs.read app:/tmp/output', 'fs.write app:/tmp/output'],
 };
 
@@ -74,7 +74,15 @@ const phaseLabels: Record<string, string> = {ready: 'Ready to play', choose: 'Ch
 const analysisLabels: Record<string, string> = {ready: 'Analysis ready', queued: 'Analysis queued', running: 'Analyzing', failed: 'Analysis needs attention'};
 const phaseLabel = (phase: string) => phaseLabels[phase] || 'Processing';
 const savedAt = (createdAt: number) => new Date(createdAt * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric'});
-async function loadSongLibrary(path: string, unavailable: string): Promise<Result<'loadLibrary'>> {
+async function loadSongLibrary(path: string, unavailable: string, native?: Parameters<Sources['loadLibrary']>[3]): Promise<Result<'loadLibrary'>> {
+  let managed = false;
+  try { managed = native?.available === true && native.call({op: 'managesEngine'}).managed === true; } catch {}
+  if (managed) {
+    try {
+      const status = await native!.later({op: 'engineReady'});
+      if (status.error) return {covers: [], error: String(status.error)};
+    } catch (error) { return {covers: [], error: message(error)}; }
+  }
   try {
     const {songs} = await (await request(path)).json();
     return {error: '', covers: songs.map((cover: {
@@ -181,8 +189,8 @@ const sources: Sources = {
       return { ...draft, error: '' };
     } catch (error) { return { ...files, error: message(error) }; }
   },
-  loadLibrary: () => loadSongLibrary('/songs', 'Saved covers are unavailable while the audio engine is disconnected. They are still kept on this Mac.'),
-  loadRemovedLibrary: () => loadSongLibrary('/songs/removed', 'Removed songs are unavailable while the audio engine is disconnected. They are still kept on this Mac.'),
+  loadLibrary: (_args, _store, _storage, native) => loadSongLibrary('/songs', 'Saved covers are unavailable while the audio engine is disconnected. They are still kept on this Mac.', native),
+  loadRemovedLibrary: (_args, _store, _storage, native) => loadSongLibrary('/songs/removed', 'Removed songs are unavailable while the audio engine is disconnected. They are still kept on this Mac.', native),
   removeSong: ([songId], _store, storage) => attempt(async () => {
     await request(`/songs/${encodeURIComponent(songId)}/remove`, post({}));
     const session = await read(storage);

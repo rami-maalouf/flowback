@@ -5,6 +5,7 @@
 /app.contract.d.ts
 /.exact/
 /.venv/
+/engine-runtime/
 /.cover-data/
 /.pytest_cache/
 /.ruff_cache/

@@ -19,6 +19,13 @@ const stop = () => { client?.kill(); engine?.kill(); process.exit(0); };
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
 
+if (target === 'mac') {
+  const packaged = Bun.spawn([process.execPath, join(root, 'tools/package-engine.mjs')], {
+    cwd: root, stdout: 'inherit', stderr: 'inherit',
+  });
+  if (await packaged.exited !== 0) throw new Error('Could not package the Mac audio engine.');
+}
+
 if (!await healthy()) {
   console.log('Starting the local audio engine. First launch installs its dependencies.');
   engine = Bun.spawn(['uv', 'run', '--frozen', '--extra', 'models', 'python', '-m', 'cover_engine.server'], {
