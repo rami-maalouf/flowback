@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Join the Flowback waitlist</title>
+<meta name="theme-color" content="#F2F8F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0C2427" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/landing/flowback-icon.png" type="image/png">
+<link rel="apple-touch-icon" href="/landing/flowback-icon.png">
+<link rel="stylesheet" href="/landing/landing.css">
+</head>
+<body>
+<main>
+  <form class="card rise" method="post" action="/waitlist">
+    <img class="mark" src="/landing/flowback-icon.png" alt="" width="64" height="64">
+    <h1>Join the waitlist</h1>
+    <p class="sub">Flowback is invite only for now. Leave your email and we will invite you when there is room.</p>
+    {{message}}
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="254" required autofocus>
+    <div class="trap" aria-hidden="true">
+      <label for="website">Leave this empty</label>
+      <input id="website" name="website" tabindex="-1" autocomplete="off">
+    </div>
+    <button class="primary" type="submit">Join the waitlist</button>
+  </form>
+  <a class="back rise d2" href="/">Back to Flowback</a>
+</main>
+</body>
+</html>

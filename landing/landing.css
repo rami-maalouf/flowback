@@ -152,6 +152,10 @@ h1 {
 
 .note { margin: 16px 0 0; font-size: 13px; color: var(--muted); }
 
+.note a { color: var(--ink); font-weight: 600; text-decoration: none; }
+
+.note a:hover { text-decoration: underline; }
+
 /* sign-in */
 
 .card {
@@ -170,7 +174,7 @@ h1 {
 
 .card h1 { font-size: 26px; line-height: 1.15; text-align: center; }
 
-.sub { margin: 6px 0 26px; font-size: 14px; color: var(--muted); text-align: center; }
+.sub { margin: 6px 0 26px; font-size: 14px; color: var(--muted); text-align: center; text-wrap: pretty; }
 
 label { display: block; margin: 0 0 6px; font-size: 13px; font-weight: 600; }
 
@@ -192,6 +196,11 @@ input {
 input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
 
 .card .primary { width: 100%; margin-top: 8px; }
+
+/* the waitlist's bot trap: people never see it, form-filling bots fill it. */
+.trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+
+.done .sub { margin-bottom: 0; }
 
 .error { margin: 0 0 18px; padding: 10px 12px; border: 1px solid var(--error-line); border-radius: 10px; background: var(--error-soft); color: var(--error); font-size: 14px; line-height: 1.4; }
 
