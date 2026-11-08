@@ -301,6 +301,11 @@ component ExactCover
   derive nameError = match named { case some(r) => r.error, case none => "" }
   derive libraryActionError = match libraryChanged { case some(r) => r.error, case none => "" }
   derive sortMeaning = sortBy == "lyrics" ? "Higher recognized-word agreement first." : sortBy == "timing" ? "Smaller word-timing differences first." : sortBy == "pace" ? "Pace closest to the original (100%) first." : sortBy == "pitch" ? "Smaller pitch-movement differences first." : "Pitch range closest to the original excerpt first."
+  // flowback is dark by default on every host, whatever the system appearance.
+  task darkScheme mount
+    after(1, useDarkScheme)
+  action useDarkScheme
+    setScheme("dark")
   task poll mount
     every(2000, refresh)
   action refresh
@@ -560,7 +565,7 @@ component ExactCover
       for entry in stack(nav) key=entry.id
         if entry.name == "home"
           column navigationKey=`${entry.id}` navigationBar="none" navigationScroll="library-content" navigationSplit="none" position="absolute" inset=0 display="flex" flex-direction="column"
-            header role="toolbar" toolbarPlacement="window" aria-label="Library" display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+            header role="toolbar" toolbarPlacement="window" aria-label="Library" display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px" background-color="surface.page" border-bottom="1px solid border.hairline"
               text "Flowback" role="heading" aria-level=1 flex=1
               button press=openInstrumentals buttonStyle="bordered" testId="instrumentals"
                 text "Instrumentals"
@@ -595,7 +600,7 @@ component ExactCover
                       text "Add your first song"
                 else
                   column gap=16
-                    input type="search" value=query input=search placeholder="Search your songs" aria-label="Search your songs" testId="song-search"
+                    input type="search" value=query input=search placeholder="Search your songs" aria-label="Search your songs" testId="song-search" background-color="surface.card" border-width=1 border-style="solid" border-color="border.hairline" border-radius=10 padding="9px 12px" font-size="1rem"
                     if songs.length == 0
                       column gap=12 padding="32px 16px" align-items="center" testId="search-empty"
                         text "No matching songs" font-weight=600
@@ -637,7 +642,7 @@ component ExactCover
                   text visibleError color="-exact-system-red" role="alert" testId="library-action-error"
         if entry.name == "instrumentals"
           column navigationKey=`${entry.id}` navigationScroll="instrumentals-content" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px" background-color="surface.page" border-bottom="1px solid border.hairline"
               button id="back" press=back disabled=extractionPending testId="instrumentals-back"
                 text "Your songs"
               text "Instrumentals" role="heading" aria-level=2 flex="1 1 auto" min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
@@ -664,7 +669,7 @@ component ExactCover
                       text "Extract your first song"
                 else
                   column gap=16
-                    input type="search" value=extractionQuery input=searchExtractions placeholder="Search extracted songs" aria-label="Search extracted songs" testId="extraction-search"
+                    input type="search" value=extractionQuery input=searchExtractions placeholder="Search extracted songs" aria-label="Search extracted songs" testId="extraction-search" background-color="surface.card" border-width=1 border-style="solid" border-color="border.hairline" border-radius=10 padding="9px 12px" font-size="1rem"
                     if filteredExtractions.length == 0
                       text "No matching extracted songs." color="text.secondary" testId="extraction-search-empty"
                     for item in filteredExtractions key=item.id
@@ -676,7 +681,7 @@ component ExactCover
                         image "symbol:forward-chevron" width="0.75rem" height="1rem" color="text.secondary"
         if entry.name == "extract"
           column navigationKey=`${entry.id}` navigationScroll="extract-content" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px" background-color="surface.page" border-bottom="1px solid border.hairline"
               button id="back" press=back disabled=extractionPending testId="extract-back"
                 text "Instrumentals"
               text "Extract a song" role="heading" aria-level=2 flex=1
@@ -689,7 +694,7 @@ component ExactCover
                   row gap=8 align-items="baseline" flex-wrap="wrap"
                     text "Song name" font-weight=600
                     text "Optional" font="-exact-footnote" color="text.secondary"
-                  input value=extractionTitle input=editExtractionTitle maxlength=160 placeholder="Use the imported song’s name" aria-label="Song name" testId="extraction-title"
+                  input value=extractionTitle input=editExtractionTitle maxlength=160 placeholder="Use the imported song’s name" aria-label="Song name" testId="extraction-title" background-color="surface.card" border-width=1 border-style="solid" border-color="border.hairline" border-radius=10 padding="9px 12px" font-size="1rem"
                 column padding=20 gap=16 border-radius=14 background-color="surface.card" border-style="solid" border-width=1 border-color="border.hairline" testId="extraction-song-card"
                   row gap=10 align-items="center" flex-wrap="wrap"
                     text "Original song" font-weight=600 flex=1
@@ -709,7 +714,7 @@ component ExactCover
                       text "WAV, MP3, M4A or FLAC · Up to 64 MB" font="-exact-footnote" color="text.secondary"
                     else
                       row gap=10 flex-wrap="wrap" align-items="center"
-                        input value=extractionUrl input=editExtractionUrl placeholder="Paste a YouTube link" aria-label="YouTube link" disabled=extractionPending testId="extraction-youtube-url" flex="1 1 180px" min-width=0
+                        input value=extractionUrl input=editExtractionUrl placeholder="Paste a YouTube link" aria-label="YouTube link" disabled=extractionPending testId="extraction-youtube-url" flex="1 1 180px" min-width=0 background-color="surface.card" border-width=1 border-style="solid" border-color="border.hairline" border-radius=10 padding="9px 12px" font-size="1rem"
                         button press=importExtractionUrl buttonStyle="bordered" disabled=(extractionUrl.trim() == "" or extractionPending) testId="extraction-import-youtube"
                           text (pending(extractionChanged) and extractionIntent == "youtube" ? "Importing…" : "Import")
                       text "Single public video, up to 20 minutes." font="-exact-footnote" color="text.secondary"
@@ -735,7 +740,7 @@ component ExactCover
                 input type="file" id="extraction-file" testId="extraction-file" display="none" change=extractionPicked
         if entry.name == "instrumental"
           column navigationKey=`${entry.id}` navigationScroll="instrumental-content" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px" background-color="surface.page" border-bottom="1px solid border.hairline"
               button id="back" press=back disabled=(extractionPending or pending(changed)) testId="instrumental-back"
                 text "Instrumentals"
               text "Extracted tracks" role="heading" aria-level=2 flex=1
@@ -786,7 +791,7 @@ component ExactCover
                 input id="stem-file" display="none" change=stemSaved cancel=stemCancelled
         if entry.name == "deleted"
           column navigationKey=`${entry.id}` navigationScroll="deleted-content" navigationSplit="none" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px" background-color="surface.page" border-bottom="1px solid border.hairline"
               button id="back" press=back disabled=pending(libraryChanged) testId="deleted-back"
                 text "Your songs"
               text "Recently deleted" role="heading" aria-level=2 flex=1
@@ -825,7 +830,7 @@ component ExactCover
                       text "Try again"
         if entry.name == "add"
           column navigationKey=`${entry.id}` navigationScroll="add-content" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px" background-color="surface.page" border-bottom="1px solid border.hairline"
               button id="back" press=back disabled=pending(changed) testId="add-back"
                 text "Your songs"
               text "Add song" role="heading" aria-level=2 flex=1
@@ -837,7 +842,7 @@ component ExactCover
                   row gap=8 align-items="baseline" flex-wrap="wrap"
                     text "Song name" font-weight=600
                     text "Optional" font="-exact-footnote" color="text.secondary"
-                  input value=title input=editTitle placeholder="Use the imported song’s name" aria-label="Song name" testId="song-title"
+                  input value=title input=editTitle placeholder="Use the imported song’s name" aria-label="Song name" testId="song-title" background-color="surface.card" border-width=1 border-style="solid" border-color="border.hairline" border-radius=10 padding="9px 12px" font-size="1rem"
                 column padding=20 gap=16 border-radius=14 background-color="surface.card" border-style="solid" border-width=1 border-color="border.hairline" testId="song-card"
                   row gap=10 align-items="center" flex-wrap="wrap"
                     text "1" font="-exact-footnote" font-weight=600 color="brand.ink"
@@ -857,7 +862,7 @@ component ExactCover
                         text (pending(changed) and intent == "song" ? "Importing audio…" : draft.song_id == "" ? "Choose audio file…" : "Replace audio file…")
                     else
                       row gap=10 flex-wrap="wrap" align-items="center"
-                        input value=youtubeUrl input=editYoutube placeholder="Paste a YouTube link" aria-label="YouTube link" disabled=pending(changed) testId="youtube-url" flex="1 1 180px" min-width=0
+                        input value=youtubeUrl input=editYoutube placeholder="Paste a YouTube link" aria-label="YouTube link" disabled=pending(changed) testId="youtube-url" flex="1 1 180px" min-width=0 background-color="surface.card" border-width=1 border-style="solid" border-color="border.hairline" border-radius=10 padding="9px 12px" font-size="1rem"
                         button press=importYoutube buttonStyle="bordered" disabled=(youtubeUrl.trim() == "" or pending(changed)) testId="import-youtube"
                           text (pending(changed) and intent == "youtube" ? "Importing…" : "Import")
                       text "Single public video, up to 20 minutes." font="-exact-footnote" color="text.secondary"
@@ -908,7 +913,7 @@ component ExactCover
                   text (draft.song_id == "" or draft.vocal_id == "" ? "Add both files to continue. Your draft is saved automatically." : youtubeDirty ? "Import your YouTube link to continue." : "We’ll match and mix only the section you sang.") font="-exact-footnote" color="text.secondary" text-align="center" line-height=1.4
         if entry.name == "addTake"
           column navigationKey=`${entry.id}` navigationScroll="take-content" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px" background-color="surface.page" border-bottom="1px solid border.hairline"
               button id="back" press=back disabled=(pending(changed) or pending(named)) testId="take-back"
                 text (takeOrigin == "extraction" ? "Extracted tracks" : "Song")
               text "Add take" role="heading" aria-level=2 flex=1
@@ -921,7 +926,7 @@ component ExactCover
                   row gap=8 align-items="baseline" flex-wrap="wrap"
                     text "Take name" font-weight=600
                     text "Optional" font="-exact-footnote" color="text.secondary"
-                  input value=takeDraft.name input=editTakeName maxlength=160 placeholder="For example, slower practice" aria-label="Take name" disabled=pending(changed) testId="take-name"
+                  input value=takeDraft.name input=editTakeName maxlength=160 placeholder="For example, slower practice" aria-label="Take name" disabled=pending(changed) testId="take-name" background-color="surface.card" border-width=1 border-style="solid" border-color="border.hairline" border-radius=10 padding="9px 12px" font-size="1rem"
                   if nameError != ""
                     text nameError role="alert" color="-exact-system-red"
                 column padding=20 gap=16 border-radius=14 background-color="surface.card" border-style="solid" border-width=1 border-color="border.hairline" testId="take-vocal-card"
@@ -950,7 +955,7 @@ component ExactCover
                 input type="file" id="take-vocal-file" testId="take-vocal-file" display="none" change=takeVocalPicked
         if entry.name == "cover"
           column navigationKey=`${entry.id}` navigationScroll="cover-content" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px"
+            header display="flex" align-items="center" flex-wrap="wrap" gap=12 padding="10px 20px" background-color="surface.page" border-bottom="1px solid border.hairline"
               button id="back" press=back disabled=(pending(changed) or pending(exported)) testId="cover-back"
                 text "Your songs"
               text "Your song" role="heading" aria-level=2 flex=1
