@@ -783,7 +783,6 @@ component ExactCover
                     text "Add a vocal recording whenever you’re ready. Your extracted tracks will stay here." color="text.secondary" line-height=1.5
                     button press=extractionCover buttonStyle="bordered" disabled=(pending(changed) or extractionPending) align-self="start" testId="extraction-add-vocals"
                       text "Add your vocals…"
-                  text "Separation may leave traces of the original voice or instruments." color="text.secondary" font="-exact-footnote" line-height=1.5
                 if extractionChangeError != ""
                   text extractionChangeError color="-exact-system-red" role="alert"
                 if visibleError != "" and feedback == "extraction-cover"
