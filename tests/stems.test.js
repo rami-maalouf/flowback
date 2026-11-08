@@ -89,9 +89,11 @@ test('plays both tracks in one mixer with saved levels that change while playing
   expect(requests.map(request => request.url)).toEqual([
     `/extractions/${id}/player`, `/extractions/${id}/player/vocals.flac`, `/extractions/${id}/player/instrumental.flac`,
   ]);
-  expect([$('vocal').value, $('backing').value]).toEqual(['40', '0']);
+  // a silent track keeps its slider at the level it returns to.
+  expect([$('vocal').value, $('backing').value]).toEqual(['40', '100']);
   expect([$('vocal-value').textContent, $('backing-value').textContent]).toEqual(['40%', 'Muted']);
-  expect(['play', 'seek', 'vocal', 'backing'].every(name => !$(name).disabled)).toBe(true);
+  expect([$('vocal-mute').getAttribute('aria-pressed'), $('backing-mute').getAttribute('aria-pressed')]).toEqual(['false', 'true']);
+  expect(['play', 'seek', 'vocal', 'backing', 'vocal-mute', 'backing-mute'].every(name => !$(name).disabled)).toBe(true);
   expect($('wave-bars').children).toHaveLength(120);
   expect($('duration').textContent).toBe('0:30');
   expect(messages.some(value => value.startsWith(`flowback-stems:${id}:height:`))).toBe(true);
@@ -136,4 +138,43 @@ test('invalid extraction links never request audio', async () => {
   expect(requests).toEqual([]);
   expect($('status').textContent).toContain('Open this song');
   expect($('play').disabled).toBe(true);
+});
+
+test('mute buttons silence a track and restore its level', async () => {
+  const {window, requests} = await player();
+  await until(() => $('status').textContent === 'Mix saved');
+  const saves = () => requests.filter(request => request.url.endsWith('/levels')).map(request => JSON.parse(request.body));
+
+  $('vocal-mute').click();
+  expect($('vocal-value').textContent).toBe('Muted');
+  expect($('vocal-strip').dataset.muted).toBe('true');
+  expect($('vocal-mute').getAttribute('aria-label')).toBe('Unmute vocals');
+  expect($('vocal').value).toBe('40');
+  await until(() => saves().length === 1);
+  expect(saves()[0]).toMatchObject({vocal_volume: 0, backing_volume: 0});
+
+  $('vocal-mute').click();
+  $('backing-mute').click();
+  expect([$('vocal-value').textContent, $('backing-value').textContent]).toEqual(['40%', '100%']);
+  await until(() => saves().at(-1)?.vocal_volume === 40 && saves().at(-1)?.backing_volume === 100);
+
+  // moving a muted slider unmutes it, and a double-click resets it to 100%.
+  $('backing-mute').click();
+  $('backing').value = '70';
+  $('backing').dispatchEvent(new window.Event('input'));
+  expect($('backing-value').textContent).toBe('70%');
+  $('backing').dispatchEvent(new window.Event('dblclick'));
+  expect($('backing-value').textContent).toBe('100%');
+
+  // a slider dragged to zero comes back at its last audible level.
+  $('vocal').value = '0';
+  $('vocal').dispatchEvent(new window.Event('input'));
+  expect($('vocal-value').textContent).toBe('Muted');
+  $('vocal-mute').click();
+  expect($('vocal').value).toBe('40');
+
+  window.dispatchEvent(new window.KeyboardEvent('keydown', {key: 'i'}));
+  expect($('backing-value').textContent).toBe('Muted');
+  window.dispatchEvent(new window.KeyboardEvent('keydown', {key: 'i', metaKey: true}));
+  expect($('backing-value').textContent).toBe('Muted');
 });
