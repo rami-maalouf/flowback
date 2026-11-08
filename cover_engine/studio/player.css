@@ -1,5 +1,6 @@
 :root {
-  color-scheme: light dark;
+  /* dark by default, like the app around this frame. */
+  color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
   color: light-dark(#173537, #EDF7F5);

@@ -1,43 +1,25 @@
 /* the landing and sign-in pages. colors are app.tamber's tokens; the waveform is the player's (cover_engine/studio/player.css). */
 :root {
-  color-scheme: light dark;
-  --page: #F2F8F7;
-  --card: #FFFFFF;
-  --line: #D2E3E1;
+  /* dark by default, like the app. */
+  color-scheme: dark;
   --brand: #08777B;
-  --ink: #086B70;
-  --accent: #08777B;
-  --text: #173537;
-  --muted: #536F71;
-  --bars: #BBD8D5;
-  --glow: rgba(8, 119, 123, .11);
-  --ring: rgba(8, 119, 123, .22);
-  --error: #B3261E;
-  --error-soft: #FBEAE8;
-  --error-line: #F4D3CF;
-  --shadow: rgba(12, 36, 39, .22);
+  --page: #0C2427;
+  --card: #123034;
+  --line: #25484B;
+  --ink: #69DAD2;
+  --accent: #69DAD2;
+  --text: #EDF7F5;
+  --muted: #AAC5C5;
+  --bars: #386568;
+  --glow: rgba(105, 218, 210, .09);
+  --ring: rgba(105, 218, 210, .25);
+  --error: #FFB4AB;
+  /* a red tint over teal turns grey: a darker fill and a red line instead. */
+  --error-soft: rgba(0, 0, 0, .18);
+  --error-line: rgba(255, 180, 171, .4);
+  --shadow: rgba(0, 0, 0, .45);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --page: #0C2427;
-    --card: #123034;
-    --line: #25484B;
-    --ink: #69DAD2;
-    --accent: #69DAD2;
-    --text: #EDF7F5;
-    --muted: #AAC5C5;
-    --bars: #386568;
-    --glow: rgba(105, 218, 210, .09);
-    --ring: rgba(105, 218, 210, .25);
-    --error: #FFB4AB;
-    /* a red tint over teal turns grey: a darker fill and a red line instead. */
-    --error-soft: rgba(0, 0, 0, .18);
-    --error-line: rgba(255, 180, 171, .4);
-    --shadow: rgba(0, 0, 0, .45);
-  }
 }
 
 * { box-sizing: border-box; }
