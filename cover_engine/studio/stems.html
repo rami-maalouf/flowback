@@ -24,16 +24,34 @@
         <div class="times"><span id="elapsed">0:00</span><span id="duration">0:00</span></div>
       </div>
     </div>
-    <div class="mix-heading"><h3>Mix levels</h3><span id="mix-hint">Adjust while listening</span></div>
-    <div class="levels">
-      <div class="level">
-        <div class="level-heading"><label for="vocal">Vocals</label><output id="vocal-value" for="vocal">100%</output></div>
-        <input id="vocal" aria-label="Vocals volume" type="range" min="0" max="200" step="1" value="100" disabled>
-      </div>
-      <div class="level">
-        <div class="level-heading"><label for="backing">Instrumental</label><output id="backing-value" for="backing">100%</output></div>
-        <input id="backing" aria-label="Instrumental volume" type="range" min="0" max="200" step="1" value="100" disabled>
-      </div>
+    <div class="mix-heading"><h3>Mix levels</h3><span id="mix-hint">Double-click a slider to reset it</span></div>
+    <div class="strips">
+      <section class="strip" id="vocal-strip" data-muted="false" aria-label="Vocals">
+        <div class="strip-head">
+          <button id="vocal-mute" class="mute" aria-pressed="false" aria-label="Mute vocals" title="Mute vocals (V)" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path class="speaker" d="M4 9.5h3.2L11.5 6v12l-4.3-3.5H4z"/><path class="waves" d="M15 9.2a4 4 0 0 1 0 5.6M17.6 6.8a7.4 7.4 0 0 1 0 10.4"/><path class="cross" d="M15.5 9.5l5 5m0-5l-5 5"/></svg>
+          </button>
+          <label for="vocal">Vocals</label>
+          <output id="vocal-value" for="vocal">100%</output>
+        </div>
+        <div class="fader">
+          <input id="vocal" aria-label="Vocals volume" type="range" min="0" max="200" step="1" value="100" title="Double-click to reset to 100%" disabled>
+        </div>
+        <div class="meter" aria-hidden="true"><span id="vocal-meter"></span></div>
+      </section>
+      <section class="strip" id="backing-strip" data-muted="false" aria-label="Instrumental">
+        <div class="strip-head">
+          <button id="backing-mute" class="mute" aria-pressed="false" aria-label="Mute instrumental" title="Mute instrumental (I)" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path class="speaker" d="M4 9.5h3.2L11.5 6v12l-4.3-3.5H4z"/><path class="waves" d="M15 9.2a4 4 0 0 1 0 5.6M17.6 6.8a7.4 7.4 0 0 1 0 10.4"/><path class="cross" d="M15.5 9.5l5 5m0-5l-5 5"/></svg>
+          </button>
+          <label for="backing">Instrumental</label>
+          <output id="backing-value" for="backing">100%</output>
+        </div>
+        <div class="fader">
+          <input id="backing" aria-label="Instrumental volume" type="range" min="0" max="200" step="1" value="100" title="Double-click to reset to 100%" disabled>
+        </div>
+        <div class="meter" aria-hidden="true"><span id="backing-meter"></span></div>
+      </section>
     </div>
     <div class="footer"><span class="save-dot" aria-hidden="true"></span><p id="status" role="status">Loading audio…</p><button id="retry" hidden>Retry</button><button id="retry-save" hidden>Retry save</button></div>
   </main>
