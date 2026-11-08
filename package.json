@@ -6,6 +6,7 @@
     "dev:mac": "bun dev.mjs mac",
     "build:mac": "bun tools/package-engine.mjs && bun exact.mjs mac",
     "deploy": "bash deploy/deploy.sh",
+    "waitlist": "bash deploy/waitlist.sh",
     "typecheck": "bunx --package typescript tsc --noEmit --strict --target ES2022 --module esnext --moduleResolution bundler app.ts"
   },
   "dependencies": {},

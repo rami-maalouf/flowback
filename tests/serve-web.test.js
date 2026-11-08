@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config, webHandler } from '../deploy/serve-web.mjs';
@@ -114,7 +114,9 @@ test('signed out, a visitor gets the landing page and the sign-in page, and noth
   const handler = accounts();
   const landing = await get('/', {}, handler);
   expect(landing.status).toBe(200);
-  expect(await landing.text()).toContain('<a class="primary rise d5" href="/login">Log in</a>');
+  const text = await landing.text();
+  expect(text).toContain('<a class="primary rise d5" href="/waitlist">Join the waitlist</a>');
+  expect(text).toContain('Already invited? <a href="/login">Log in</a>');
   expect(landing.headers.get('content-security-policy')).toContain("default-src 'none'");
   expect(landing.headers.get('content-security-policy')).toContain("script-src 'self'");
   const script = await get('/landing/wave.js', {}, handler);
@@ -240,7 +242,7 @@ test('accounts need hashes and a session secret, and no web route may shadow a p
   writeFileSync(secretFile, `${secret}\n`);
   const loaded = config({FLOWBACK_ORIGIN: 'https://flowback.example', FLOWBACK_USERS: users, FLOWBACK_SECRET: secretFile});
   expect([loaded.users.has('rami'), loaded.secret]).toEqual([true, secret]);
-  expect(config({})).toEqual({origin: '', users: new Map(), secret: ''});
+  expect(config({})).toEqual({origin: '', users: new Map(), secret: '', waitlist: ''});
 
   for (const pattern of ['/songs', '/login', '/landing']) {
     const clashing = mkdtempSync(join(tmpdir(), 'flowback-clash-'));
@@ -248,4 +250,69 @@ test('accounts need hashes and a session secret, and no web route may shadow a p
     expect(() => webHandler(clashing)).toThrow(`The web route ${pattern} is a path this server answers itself.`);
     rmSync(clashing, {recursive: true, force: true});
   }
+});
+
+// the waitlist: open to signed-out visitors, one line per email, never telling who is on it.
+const listed = (options = {}) => {
+  const file = join(mkdtempSync(join(tmpdir(), 'flowback-waitlist-')), 'waitlist.jsonl');
+  return {file, handler: accounts({waitlist: file, ...options})};
+};
+const join_ = (handler, fields, headers = {}) => handler(new Request('http://127.0.0.1/waitlist', {
+  method: 'POST', body: new URLSearchParams(fields), headers: {origin: 'http://127.0.0.1', ...headers},
+}));
+const lines = (file) => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : []);
+
+test('a visitor joins the waitlist once, and a repeated email looks the same', async () => {
+  const {file, handler} = listed({now: () => Date.UTC(2026, 10, 7)});
+  const form = await get('/waitlist', {}, handler);
+  const html = await form.text();
+  expect(form.status).toBe(200);
+  expect(html).toContain('<form class="card rise" method="post" action="/waitlist">');
+  expect(html).not.toContain('{{');
+  expect(form.headers.get('content-security-policy')).not.toContain('script-src');
+  expect(form.headers.get('cache-control')).toBe('no-store');
+
+  for (const email of ['  You@Example.com ', 'you@example.com']) {
+    const reply = await join_(handler, {email});
+    expect([reply.status, reply.headers.get('location')]).toEqual([303, '/waitlist?joined']);
+  }
+  expect(lines(file)).toEqual([{email: 'you@example.com', at: '2026-11-07T00:00:00.000Z'}]);
+  expect(statSync(file).mode & 0o777).toBe(0o600);
+  const done = await (await get('/waitlist?joined', {}, handler)).text();
+  expect(done).toContain('You’re on the list');
+  expect(done).not.toContain('you@example.com');
+
+  // a restarted server still knows who joined.
+  const restarted = accounts({waitlist: file});
+  await join_(restarted, {email: 'you@example.com'});
+  await join_(restarted, {email: 'friend@example.org'});
+  expect(lines(file).map(entry => entry.email)).toEqual(['you@example.com', 'friend@example.org']);
+});
+
+test('the waitlist turns away bad emails, bots, other sites and floods', async () => {
+  const {file, handler} = listed();
+  for (const email of ['', 'nobody', 'a@b', 'a b@example.com', `${'x'.repeat(250)}@example.com`]) {
+    const reply = await join_(handler, {email}, {'x-forwarded-for': `198.51.100.${email.length}`});
+    expect([email, reply.headers.get('location')]).toEqual([email, '/waitlist?error=invalid']);
+  }
+  const message = await (await get('/waitlist?error=invalid', {}, handler)).text();
+  expect(message).toContain('<p class="error" role="alert">Enter an email address, such as you@example.com.</p>');
+
+  const bot = await join_(handler, {email: 'bot@example.com', website: 'https://spam.example'});
+  expect(bot.headers.get('location')).toBe('/waitlist?joined');
+  expect((await join_(handler, {email: 'site@example.com'}, {origin: 'https://evil.example'})).status).toBe(403);
+  expect(lines(file)).toEqual([]);
+
+  const flood = {'x-forwarded-for': '203.0.113.7'};
+  for (let i = 0; i < 5; i++) await join_(handler, {email: `person${i}@example.com`}, flood);
+  expect((await join_(handler, {email: 'person5@example.com'}, flood)).headers.get('location')).toBe('/waitlist?error=limit');
+  expect(lines(file).length).toBe(5);
+  expect((await join_(handler, {email: 'other@example.com'}, {'x-forwarded-for': '203.0.113.8'})).headers.get('location')).toBe('/waitlist?joined');
+});
+
+test('without a waitlist file, or without accounts, there is no waitlist page', async () => {
+  expect((await get('/waitlist', {}, accounts())).status).toBe(404);
+  const open = webHandler(root, {engine: engineOrigin, waitlist: join(root, 'unused.jsonl')});
+  expect((await get('/waitlist', {}, open)).status).toBe(404);
+  expect(config({STATE_DIRECTORY: '/var/lib/flowback-web'}).waitlist).toBe('/var/lib/flowback-web/waitlist.jsonl');
 });

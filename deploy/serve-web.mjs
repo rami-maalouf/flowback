@@ -1,12 +1,12 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 
 // the engine's routes by first path segment. requests for them go to the engine, so the
 // app and its studio pages share one origin and one sign-in.
 export const ENGINE_PATHS = ['health', 'uploads', 'imports', 'extractions', 'jobs', 'songs', 'studio'];
-// what this server answers itself: the sign-in pages and the landing page's files.
-const OWN_PATHS = ['login', 'logout', 'landing'];
+// what this server answers itself: the sign-in pages, the waitlist and the landing page's files.
+const OWN_PATHS = ['login', 'logout', 'waitlist', 'landing'];
 const LANDING = resolve(import.meta.dir, '../landing');
 const LANDING_FILES = ['.css', '.js', '.png'];
 const UNSAFE_HEADERS = ['host', 'origin', 'referer', 'authorization', 'cookie', 'accept-encoding', 'connection',
@@ -18,6 +18,9 @@ const SESSION_FOR = 400 * 24 * 60 * 60 * 1000;
 const RENEW_AFTER = 24 * 60 * 60 * 1000;
 const FAILURE_LIMIT = 10;
 const FAILURE_WINDOW = 10 * 60 * 1000;
+// joins one address may send per window, and the most entries the list keeps, so it cannot fill the disk.
+const JOIN_LIMIT = 5;
+const WAITLIST_MAX = 10_000;
 const PAGE_POLICY = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 // the landing page runs its waveform's script; the sign-in page runs none.
 const LANDING_POLICY = `${PAGE_POLICY}; script-src 'self'`;
@@ -41,13 +44,15 @@ export function config(env) {
   const secretPath = credential('secret', env.FLOWBACK_SECRET);
   const secret = users.size && secretPath ? readFileSync(secretPath, 'utf8').trim() : '';
   if (users.size && secret.length < 32) throw new Error('Accounts need a session secret of 32 or more characters in /etc/flowback/web.secret.');
-  return {origin, users, secret};
+  // systemd's StateDirectory= gives the service a place to keep the waitlist.
+  const waitlist = env.FLOWBACK_WAITLIST ?? (env.STATE_DIRECTORY ? join(env.STATE_DIRECTORY, 'waitlist.jsonl') : '');
+  return {origin, users, secret, waitlist};
 }
 
 // serves a release build (bun exact.mjs web-build --out dist) by exact's static host rule:
 // the file at the path; else shell.html, with 200 for a route in routes.json and 404 otherwise.
 // with accounts, a signed-out visitor gets only the landing page and the sign-in page.
-export function webHandler(root, {engine = 'http://127.0.0.1:8891', origin = '', users = new Map(), secret = '', landing = LANDING, now = Date.now} = {}) {
+export function webHandler(root, {engine = 'http://127.0.0.1:8891', origin = '', users = new Map(), secret = '', waitlist = '', landing = LANDING, now = Date.now} = {}) {
   root = resolve(root);
   landing = resolve(landing);
   const shell = join(root, 'shell.html');
@@ -58,6 +63,7 @@ export function webHandler(root, {engine = 'http://127.0.0.1:8891', origin = '',
   const matches = (path) => routes.some(pattern => pattern.length === path.length
     && pattern.every((part, i) => part.startsWith(':') ? path[i] !== '' : part === path[i]));
   const sessions = users.size ? sessionGate({users, secret, origin, landing, now}) : null;
+  const list = sessions && waitlist ? waitlistDesk({file: waitlist, origin, landing, now}) : null;
   const secure = origin.startsWith('https:');
 
   return async (request) => {
@@ -78,6 +84,7 @@ export function webHandler(root, {engine = 'http://127.0.0.1:8891', origin = '',
       const file = within(landing, url.pathname.slice('/landing'.length));
       return reading && file && LANDING_FILES.includes(extname(file)) && isFile(file) ? send(request, file, 200) : new Response(null, {status: 404});
     }
+    if (url.pathname === '/waitlist') return list ? list.answer(request, url) : new Response(null, {status: 404});
     const session = sessions.user(request);
     if (url.pathname === '/login') return sessions.login(request, url, session);
     if (url.pathname === '/logout') return sessions.logout();
@@ -180,8 +187,7 @@ function sessionGate({users, secret, origin, landing, now}) {
     const field = (key) => (typeof form?.get(key) === 'string' ? form.get(key) : '');
     const next = safeNext(field('next'));
     const again = (error) => redirect(`/login?error=${error}${next === '/' ? '' : `&next=${encodeURIComponent(next)}`}`);
-    // traefik appends the address it saw, so the last entry is the one a client cannot write.
-    const client = (request.headers.get('x-forwarded-for') ?? '').split(',').pop().trim() || 'direct';
+    const client = clientOf(request);
     const recent = (failures.get(client) ?? []).filter(time => now() - time < FAILURE_WINDOW);
     if (recent.length >= FAILURE_LIMIT) return again('limit');
     const name = field('name');
@@ -198,6 +204,64 @@ function sessionGate({users, secret, origin, landing, now}) {
   }
 
   return {user, issue, login, logout: () => redirect('/', {'set-cookie': cookie('', 0)})};
+}
+
+// the waitlist is one json line per email, `{"email":…,"at":…}`, appended in the order people join.
+// a repeated email gets the same answer as a new one, so the page never tells who is on the list.
+function waitlistDesk({file, origin, landing, now}) {
+  const form = readFileSync(join(landing, 'waitlist.html'), 'utf8');
+  const joined = readFileSync(join(landing, 'joined.html'), 'utf8');
+  const emails = new Set();
+  if (existsSync(file)) {
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      try { emails.add(JSON.parse(line).email); } catch {}
+    }
+  }
+  const tries = new Map();
+  const messages = {
+    invalid: 'Enter an email address, such as you@example.com.',
+    limit: 'Too many tries. Wait 10 minutes, then try again.',
+    full: 'The waitlist is full for now. Try again later.',
+  };
+  const html = (text) => page(new Response(text, {headers: {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'}}));
+
+  async function answer(request, url) {
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      if (url.searchParams.has('joined')) return html(joined);
+      const message = messages[url.searchParams.get('error')];
+      return html(form.replace('{{message}}', message ? `<p class="error" role="alert">${message}</p>` : ''));
+    }
+    if (request.method !== 'POST') return new Response(null, {status: 405});
+    const from = request.headers.get('origin');
+    if (from && from !== origin && from !== url.origin) return new Response(null, {status: 403});
+    if (Number(request.headers.get('content-length') ?? 0) > 4096) return new Response(null, {status: 413});
+    const client = clientOf(request);
+    const recent = (tries.get(client) ?? []).filter(time => now() - time < FAILURE_WINDOW);
+    if (recent.length >= JOIN_LIMIT) return redirect('/waitlist?error=limit');
+    tries.set(client, [...recent, now()]);
+    if (tries.size > 1000) {
+      for (const [key, times] of tries) if (now() - times.at(-1) >= FAILURE_WINDOW) tries.delete(key);
+    }
+    const fields = await request.formData().catch(() => null);
+    const field = (key) => (typeof fields?.get(key) === 'string' ? fields.get(key) : '');
+    // a person never sees the trap field; a bot that fills it is thanked and forgotten.
+    if (field('website')) return redirect('/waitlist?joined');
+    const email = field('email').trim().toLowerCase();
+    if (email.length > 254 || !/^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(email)) return redirect('/waitlist?error=invalid');
+    if (!emails.has(email)) {
+      if (emails.size >= WAITLIST_MAX) return redirect('/waitlist?error=full');
+      appendFileSync(file, `${JSON.stringify({email, at: new Date(now()).toISOString()})}\n`, {mode: 0o600});
+      emails.add(email);
+    }
+    return redirect('/waitlist?joined');
+  }
+
+  return {answer};
+}
+
+// traefik appends the address it saw, so the last entry is the one a client cannot write.
+function clientOf(request) {
+  return (request.headers.get('x-forwarded-for') ?? '').split(',').pop().trim() || 'direct';
 }
 
 // a page this server writes: nothing from elsewhere, and scripts only where the policy names them.
@@ -255,12 +319,12 @@ function send(request, path, status) {
 if (import.meta.main) {
   const [root, port] = process.argv.slice(2);
   if (!root || !port) throw new Error('Use bun deploy/serve-web.mjs <dist> <port>.');
-  const {origin, users, secret} = config(process.env);
-  const handler = webHandler(root, {origin, users, secret});
+  const {origin, users, secret, waitlist} = config(process.env);
+  const handler = webHandler(root, {origin, users, secret, waitlist});
   // long engine requests (an upload, preparing a cover's tracks) stay open past bun's 10 s idle default.
   const server = Bun.serve({hostname: '127.0.0.1', port: Number(port), idleTimeout: 255, fetch: (request, bun) => {
     bun.timeout(request, 0);
     return handler(request);
   }});
-  console.log(`Flowback web app at ${server.url}${origin ? ` for ${origin}` : ''}${users.size ? `, ${users.size} account(s)` : ''}`);
+  console.log(`Flowback web app at ${server.url}${origin ? ` for ${origin}` : ''}${users.size ? `, ${users.size} account(s)` : ''}${waitlist ? `, waitlist in ${waitlist}` : ''}`);
 }

@@ -12,6 +12,9 @@ EnvironmentFile=-/etc/flowback/web.env
 # deploy.sh creates web.users empty (no account, which serve-web.mjs refuses for a public origin) and a random secret.
 LoadCredential=users:/etc/flowback/web.users
 LoadCredential=secret:/etc/flowback/web.secret
+# the waitlist lives in /var/lib/flowback-web/waitlist.jsonl and survives restarts and deploys.
+StateDirectory=flowback-web
+StateDirectoryMode=0700
 ExecStart=/opt/flowback/bin/bun /opt/flowback/app/deploy/serve-web.mjs /opt/flowback/web 8893
 Restart=on-failure
 RestartSec=5

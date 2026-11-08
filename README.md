@@ -105,7 +105,7 @@ The services run as a `flowback` system user. Code is in `/opt/flowback`. The li
 
 ### A public address with accounts
 
-The web service can also answer on a public HTTPS address, such as `https://flowback.orbitlabs.studio`. A signed-out visitor sees only a landing page and a sign-in page, from [`landing/`](landing). Every other page leads to sign-in. After sign-in, a signed cookie keeps you logged in. It lasts 400 days, the longest a browser keeps a cookie, and each day you use the site renews it, so you stay logged in while you keep using it. `/logout` ends it. The web service forwards the engine's paths (`/health`, `/uploads`, `/imports`, `/extractions`, `/jobs`, `/songs` and `/studio`) to the engine for signed-in visitors, so the app, its players and the engine share one origin. It refuses requests that other sites send to the engine. The engine itself still accepts only loopback requests.
+The web service can also answer on a public HTTPS address, such as `https://flowback.orbitlabs.studio`. A signed-out visitor sees only a landing page, a waitlist page and a sign-in page, from [`landing/`](landing). Every other page leads to sign-in. After sign-in, a signed cookie keeps you logged in. It lasts 400 days, the longest a browser keeps a cookie, and each day you use the site renews it, so you stay logged in while you keep using it. `/logout` ends it. The web service forwards the engine's paths (`/health`, `/uploads`, `/imports`, `/extractions`, `/jobs`, `/songs` and `/studio`) to the engine for signed-in visitors, so the app, its players and the engine share one origin. It refuses requests that other sites send to the engine. The engine itself still accepts only loopback requests.
 
 1. Add the origin to `grants` in `app.ts`. The deploy builds the public site with that entry.
 2. On the server, write `FLOWBACK_ORIGIN=<origin>` to `/etc/flowback/web.env`, and one `name:hash` line per account to `/etc/flowback/web.users`, with a hash from `Bun.password.hash`. Without an account, the web service refuses to start for a public origin. The deploy creates `/etc/flowback/web.secret`, which signs the cookies; replacing it signs everyone out.
@@ -119,6 +119,14 @@ read -r "name?Name: " && read -rs "pw?Password: " && echo && printf %s "$pw" | N
 ```
 
 To change a password, delete the account's line from `/etc/flowback/web.users` first, then add it again. Removing an account or changing its password ends its sessions.
+
+The landing page's main button opens the waitlist at `/waitlist`. Visitors leave an email address, and the web service appends one JSON line per new address to `/var/lib/flowback-web/waitlist.jsonl` (systemd's `StateDirectory`, kept across deploys). A repeated address gets the same answer as a new one, so the page never shows who is on the list. Each address may try 5 times in 10 minutes, a hidden field turns away form-filling bots, and the list stops at 10,000 entries. The waitlist sends no email. To read it, oldest first:
+
+```sh
+bun run waitlist oracle
+```
+
+To invite someone, add an account for them as above and send them its name and password.
 
 The public build sends engine requests to the public origin, also when you open its web app through the tunnel. The Mac app keeps the local origin, so it still uses the server's engine through the tunnel.
 
