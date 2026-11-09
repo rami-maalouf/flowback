@@ -10,10 +10,10 @@ build = "build.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-exact-logic = { path = "../../exact2/logic" }
-exact-apple = { path = "../../exact2/host/apple" }
-exact-apple-update = { path = "../../exact2/host/apple-update" }
-exact-js = { path = "../../exact2/js" }
+exact-logic = { path = "../../expo-exact/logic" }
+exact-apple = { path = "../../expo-exact/host/apple" }
+exact-apple-update = { path = "../../expo-exact/host/apple-update" }
+exact-js = { path = "../../expo-exact/js" }
 
 [build-dependencies]
-exact-js-bake = { path = "../../exact2/js/bake" }
+exact-js-bake = { path = "../../expo-exact/js/bake" }

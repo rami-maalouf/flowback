@@ -37,7 +37,9 @@ These narrow-layout previews use an empty draft and synthetic test audio.
 
 ## Run
 
-Building requires the sibling `../exact2` checkout, Bun, uv, and ffmpeg. Native builds also need Exact's Xcode/Rust prerequisites.
+Clone [expo/exact](https://github.com/expo/exact) alongside this app with `git clone https://github.com/expo/exact.git ../expo-exact`, then run `bun scripts/exact.mjs setup` from that checkout. `EXACT2` can override its location. The migration baseline is `94b8671f70fe2e25b307a40e7fce66dc27c9f802`.
+
+Building requires the sibling `../expo-exact` checkout, Bun, uv, and ffmpeg. Native builds also need Exact's Xcode/Rust prerequisites.
 
 The installed Mac app starts its bundled audio engine automatically. It includes Python, the locked processing dependencies, ffmpeg/ffprobe and Bun (for YouTube imports), so it does not need a terminal, Homebrew, uv, or this checkout at runtime. Heavy models load when processing needs them; downloaded weights remain in the existing model cache. Build the complete Mac app with:
 

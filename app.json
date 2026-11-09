@@ -1,5 +1,5 @@
 {
-  "$schema": "../exact2/scripts/app.schema.json",
+  "$schema": "../expo-exact/scripts/app.schema.json",
   "name": "Flowback",
   "short_name": "Flowback",
   "id": "com.rami.exact-cover",
