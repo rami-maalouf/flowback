@@ -11,6 +11,10 @@ from .alignment import Phrase
 from .models import RenderResult
 
 SAMPLE_RATE = 44100
+# seconds of crossfade on each side of a join between stretched segments.
+SEAM = 0.01
+# seconds of neighboring audio the stretcher sees on each side of a segment.
+CONTEXT = 0.1
 
 
 def decode(source: Path, destination: Path) -> None:
@@ -74,6 +78,34 @@ def stretch_phrase(audio: np.ndarray, rate: int, duration: float) -> np.ndarray:
     if len(stretched) < frames:
         stretched = np.pad(stretched, ((0, frames - len(stretched)), (0, 0)))
     return stretched[:frames]
+
+
+def _segment(vocal, rate, a, b, frames, seam_in, seam_out):
+    """stretch vocal[a:b] to frames, with seam_in/seam_out extra frames weighted by crossfade ramps.
+
+    the stretcher runs on surrounding context too, so its start-up and tail artifacts land
+    outside the kept audio, and neighbors overlap on real audio instead of a hard cut.
+    """
+    speed = (b - a) / frames
+    context = round(CONTEXT * rate)
+    before = min(context, a)
+    after = min(context, len(vocal) - b)
+    total = before + (b - a) + after
+    stretched = stretch_phrase(vocal[a - before : b + after], rate, total / speed / rate)
+    start = round(before / speed) - seam_in
+    piece = np.zeros((seam_in + frames + seam_out, vocal.shape[1]), dtype=vocal.dtype)
+    lo, hi = max(0, start), min(len(stretched), start + len(piece))
+    if hi > lo:
+        piece[lo - start : hi - start] = stretched[lo:hi]
+    if seam_in:
+        piece[: 2 * seam_in] *= _ramp(2 * seam_in)
+    if seam_out:
+        piece[-2 * seam_out :] *= _ramp(2 * seam_out)[::-1]
+    return piece
+
+
+def _ramp(frames):
+    return ((np.arange(frames, dtype=np.float32) + 0.5) / frames)[:, None]
 
 
 def _fade(audio: np.ndarray, frames: int) -> None:
@@ -159,19 +191,27 @@ def mix_section(
         )
         # preserve audio across impossible or extreme pauses using the continuous span.
         segments.extend(pairwise(anchors) if feasible else [(left, right)])
-    changed = False
     for (a, target_start), (b, target_end) in segments:
         if b <= a or target_end <= target_start:
             raise ValueError("Phrase timing is out of order. Analyze the files again.")
+    # each seam is crossfaded over the same frames by both neighbors, so the weights sum to one.
+    lengths = [target_end - target_start for (_, target_start), (_, target_end) in segments]
+    seams = [
+        0,
+        *(min(round(SEAM * rate), left // 2, right // 2) for left, right in pairwise(lengths)),
+        0,
+    ]
+    changed = False
+    for ((a, target_start), (b, target_end)), seam_in, seam_out in zip(segments, seams, seams[1:]):
         duration = (target_end - target_start) / rate
         changed |= abs(duration - (b - a) / rate) > 0.05
-        stretched = stretch_phrase(vocal[a:b], rate, duration)
-        offset = target_start - start_frame
+        piece = _segment(vocal, rate, a, b, target_end - target_start, seam_in, seam_out)
+        offset = target_start - seam_in - start_frame
         source_offset = max(0, -offset)
         target_offset = max(0, offset)
-        count = min(len(stretched) - source_offset, len(aligned) - target_offset)
+        count = min(len(piece) - source_offset, len(aligned) - target_offset)
         if count > 0:
-            aligned[target_offset : target_offset + count] += stretched[
+            aligned[target_offset : target_offset + count] += piece[
                 source_offset : source_offset + count
             ]
     active = np.max(np.abs(aligned), axis=1) > 0.001
