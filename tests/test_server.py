@@ -9,6 +9,7 @@ from threading import Event
 import pytest
 from fastapi.testclient import TestClient
 
+from cover_engine.audio import MIX_VERSION
 from cover_engine.models import Candidate, RenderResult
 from cover_engine.server import create_app
 
@@ -597,3 +598,30 @@ def test_song_title_and_original_metadata_survive_restart(tmp_path):
             ).status_code
             == 422
         )
+
+
+def test_mixes_from_an_older_renderer_are_redone_on_restart(tmp_path):
+    with client_for(tmp_path, FakeEngine()) as client:
+        job_id = start_job(client)
+        await_phase(client, job_id, "ready")
+        response = client.post(
+            f"/jobs/{job_id}/mix", json={"vocal_volume": 90, "backing_volume": 60}
+        )
+        assert response.status_code == 202
+        assert await_phase(client, job_id, "ready")["revision"] == 2
+    state_file = tmp_path / "jobs" / job_id / "job.json"
+    state = json.loads(state_file.read_text())
+    assert state.pop("mix_version") == MIX_VERSION
+    state_file.write_text(json.dumps(state))
+    engine = FakeEngine()
+    with client_for(tmp_path, engine) as client:
+        snapshot = await_phase(client, job_id, "ready")
+        assert snapshot["revision"] == 3
+        assert engine.analyzed == 0
+        assert engine.rendered == ["first"]
+        assert engine.render_volumes == [(90, 60)]
+    assert json.loads(state_file.read_text())["mix_version"] == MIX_VERSION
+    engine = FakeEngine()
+    with client_for(tmp_path, engine) as client:
+        assert client.get(f"/jobs/{job_id}").json()["revision"] == 3
+        assert engine.rendered == []

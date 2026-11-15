@@ -165,3 +165,17 @@ def test_analysis_persists_alignment_and_renders_selected_repeat(tmp_path, monke
     pipeline.render(work_dir, candidates[1].id, lambda *_: None, vocal_volume=0, backing_volume=0)
     assert not np.any(sf.read(work_dir / "mix.wav")[0])
     assert (song.read_bytes(), vocal.read_bytes()) == original_inputs
+
+
+def test_joins_between_differently_stretched_segments_are_seamless(tmp_path):
+    # a hard cut between separately stretched segments clicks and adds hiss above 12 khz.
+    rate = 44100
+    vocal = tone(437, 3, rate)
+    backing = np.zeros((rate * 6, 1), dtype=np.float32)
+    phrases = [Phrase(0, 1.5, 2, 3.4), Phrase(1.5, 3, 3.4, 5.1)]
+    result = mix_section(backing, backing, vocal, rate, phrases, tmp_path)
+    aligned, _ = sf.read(tmp_path / "preview-vocal.wav", always_2d=True)
+    join = round((3.4 - result.start) * rate)
+    steady = np.abs(np.diff(aligned[join - rate // 2 : join - rate // 4, 0])).max()
+    seam = np.abs(np.diff(aligned[join - rate // 50 : join + rate // 50, 0])).max()
+    assert seam < steady * 1.2
