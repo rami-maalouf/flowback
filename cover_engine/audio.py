@@ -11,6 +11,9 @@ from .alignment import Phrase
 from .models import RenderResult
 
 SAMPLE_RATE = 44100
+# bump when rendering changes how a take sounds; saved mixes from older versions are redone.
+# 2: stretched vocal segments are crossfaded instead of hard-cut.
+MIX_VERSION = 2
 # seconds of crossfade on each side of a join between stretched segments.
 SEAM = 0.01
 # seconds of neighboring audio the stretcher sees on each side of a segment.

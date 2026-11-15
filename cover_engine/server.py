@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import youtube
 from .assessments import AssessmentStore, envelope
+from .audio import MIX_VERSION
 from .extractions import QUEUE_KIND, WAV_FORMATS, ExtractionStore
 from .live import STUDIO, LiveMixer
 from .persistence import write_json as _write_json
@@ -148,6 +149,7 @@ class JobStore:
                     self.uploads[path.stem] = value
             except (ValueError, KeyError, OSError):
                 LOGGER.warning("could not restore upload metadata: %s", path)
+        outdated = []
         for path in (self.root / "jobs").glob("*/job.json"):
             try:
                 value = json.loads(path.read_text())
@@ -190,10 +192,27 @@ class JobStore:
                         error="The saved audio is missing. Create the cover again to retry.",
                     )
                     self._save(job_id)
+                elif (
+                    snapshot["phase"] == "ready"
+                    and snapshot["selected_id"]
+                    and value.get("mix_version", 1) < MIX_VERSION
+                ):
+                    outdated.append(job_id)
                 elif migrated:
                     self._save(job_id)
             except (ValueError, KeyError, OSError, TypeError):
                 LOGGER.warning("could not restore job: %s", path)
+        # mixes from an older renderer sound worse; render them again, newest first.
+        # a failed render restores the previous mix, so nothing is lost.
+        for job_id in sorted(outdated, key=lambda key: self.jobs[key]["created_at"], reverse=True):
+            snapshot = deepcopy(self.jobs[job_id]["snapshot"])
+            snapshot.update(
+                phase="queued", message="Waiting to update your mix with the improved engine"
+            )
+            try:
+                self._queue_render(job_id, snapshot, snapshot["selected_id"])
+            except OSError:
+                LOGGER.warning("could not queue an updated mix for %s", job_id)
 
     def _save(self, job_id):
         _write_json(self.root / "jobs" / job_id / "job.json", self.jobs[job_id])
@@ -624,6 +643,7 @@ class JobStore:
                         continue
                     previous = deepcopy(self.jobs[job_id])
                     self.jobs[job_id]["output_id"] = output_id
+                    self.jobs[job_id]["mix_version"] = MIX_VERSION
                     self.jobs[job_id].pop("previous_ready", None)
                     try:
                         self.update(
