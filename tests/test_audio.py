@@ -179,3 +179,25 @@ def test_joins_between_differently_stretched_segments_are_seamless(tmp_path):
     steady = np.abs(np.diff(aligned[join - rate // 2 : join - rate // 4, 0])).max()
     seam = np.abs(np.diff(aligned[join - rate // 50 : join + rate // 50, 0])).max()
     assert seam < steady * 1.2
+
+
+def test_small_timing_changes_keep_the_real_waveform():
+    # a phase vocoder rebuilds every sample, so even a 1% stretch sounded robotic on voices.
+    rate = 44100
+    t = np.arange(2 * rate) / rate
+    pitch = 2 * np.pi * np.cumsum(180 + 25 * np.sin(2 * np.pi * 5 * t)) / rate
+    voice = sum(np.sin(k * pitch) / k for k in range(1, 12)).astype(np.float32)[:, None] * 0.1
+    stretched = stretch_phrase(voice, rate, 2 * 1.01)
+    size = round(0.03 * rate)
+    matches = []
+    for start in range(rate // 10, len(stretched) - rate // 10, size):
+        out = stretched[start : start + size, 0]
+        source = round(start / 1.01)
+        best = max(
+            np.dot(out, voice[source + lag : source + lag + size, 0])
+            / (np.linalg.norm(out) * np.linalg.norm(voice[source + lag : source + lag + size, 0]))
+            for lag in range(-200, 201, 2)
+        )
+        matches.append(best)
+    assert np.median(matches) > 0.99
+    assert np.mean(np.array(matches) > 0.95) > 0.75
