@@ -13,7 +13,11 @@ from .models import RenderResult
 SAMPLE_RATE = 44100
 # bump when rendering changes how a take sounds; saved mixes from older versions are redone.
 # 2: stretched vocal segments are crossfaded instead of hard-cut.
-MIX_VERSION = 2
+# 3: wsola replaces the rubber band phase vocoder, which made voices sound robotic.
+MIX_VERSION = 3
+# seconds per wsola window, and how far it may shift a window to keep the waveform continuous.
+STRETCH_WINDOW = 0.025
+STRETCH_TOLERANCE = 0.006
 # seconds of crossfade on each side of a join between stretched segments.
 SEAM = 0.01
 # seconds of neighboring audio the stretcher sees on each side of a segment.
@@ -56,8 +60,6 @@ def decode(source: Path, destination: Path) -> None:
 
 
 def stretch_phrase(audio: np.ndarray, rate: int, duration: float) -> np.ndarray:
-    from pedalboard import time_stretch
-
     frames = round(duration * rate)
     if not len(audio) or frames <= 0:
         raise ValueError("The detected phrase has empty audio or invalid timing.")
@@ -69,18 +71,55 @@ def stretch_phrase(audio: np.ndarray, rate: int, duration: float) -> np.ndarray:
         )
     if frames == len(audio):
         return audio.copy()
-    stretched = time_stretch(
-        np.ascontiguousarray(audio.T),
-        rate,
-        stretch_factor=speed,
-        pitch_shift_in_semitones=0,
-        preserve_formants=True,
-    ).T
-    if stretched.ndim == 1:
-        stretched = stretched[:, None]
-    if len(stretched) < frames:
-        stretched = np.pad(stretched, ((0, frames - len(stretched)), (0, 0)))
-    return stretched[:frames]
+    return _wsola(audio, frames, rate)
+
+
+def _wsola(audio, frames, rate):
+    """time-scale audio to frames by overlap-adding pieces of the real waveform (wsola).
+
+    a phase vocoder rebuilds every sample from its spectrum, which makes a voice sound robotic
+    even for a 1% change. wsola copies short windows of the take and repeats or skips a few
+    milliseconds where the waveforms line up, so the voice keeps its own sound.
+    """
+    size = round(STRETCH_WINDOW * rate) // 2 * 2
+    hop = size // 2
+    tolerance = round(STRETCH_TOLERANCE * rate)
+    window = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(size) / size)).astype(np.float32)
+    step = hop * len(audio) / frames
+    pad = size + tolerance
+    padded = np.pad(audio, ((pad, pad + 3 * size + 2 * tolerance), (0, 0)))
+    mono = padded.mean(axis=1)
+    count = math.ceil(frames / hop) + 2
+    output = np.zeros(((count + 1) * hop + size, audio.shape[1]), dtype=np.float32)
+    weight = np.zeros(len(output), dtype=np.float32)
+    fft = 1 << (size + 2 * tolerance - 1).bit_length()
+    delta = 0
+    for index in range(count):
+        # window centers sit at their nominal input position, so output time t maps to t * speed.
+        position = pad + round(index * step) - hop + delta
+        output[index * hop : index * hop + size] += (
+            padded[position : position + size] * window[:, None]
+        )
+        weight[index * hop : index * hop + size] += window
+        # the next window is the candidate that best continues the waveform just placed.
+        natural = mono[position + hop : position + hop + size]
+        nominal = pad + round((index + 1) * step) - hop
+        region = mono[nominal - tolerance : nominal + tolerance + size]
+        if len(region) < size + 2 * tolerance or not np.any(natural):
+            delta = 0
+            continue
+        delta = (
+            int(
+                np.argmax(
+                    np.fft.irfft(
+                        np.fft.rfft(region, fft) * np.conj(np.fft.rfft(natural, fft)), fft
+                    )[: 2 * tolerance + 1]
+                )
+            )
+            - tolerance
+        )
+    weight[weight < 1e-3] = 1
+    return (output / weight[:, None])[hop : hop + frames].astype(audio.dtype)
 
 
 def _segment(vocal, rate, a, b, frames, seam_in, seam_out):
